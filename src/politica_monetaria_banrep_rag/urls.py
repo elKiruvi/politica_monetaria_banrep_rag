@@ -30,13 +30,19 @@ class UnsafeUrlError(ValueError):
 
 
 def _check_text(value: str) -> None:
-    if any(unicodedata.category(char) in {"Cc", "Cf", "Zs"} for char in value) or "\\" in value:
+    if any(unicodedata.category(char) in {"Cc", "Cf", "Zs", "Zl", "Zp"} for char in value) or (
+        "\\" in value
+    ):
         raise UnsafeUrlError("La URL contiene espacios, caracteres de control o barras invertidas.")
 
 
 def _parts(url: str, allowed_hosts: frozenset[str]):
     _check_text(url)
-    parts = urlsplit(url)
+    try:
+        parts = urlsplit(url)
+        parts.hostname  # noqa: B018 - fuerza la validación de corchetes IPv6.
+    except ValueError as exc:
+        raise UnsafeUrlError("La URL no se puede interpretar.") from exc
     if parts.scheme != "https" or parts.hostname not in allowed_hosts:
         raise UnsafeUrlError("La URL está fuera de los dominios autorizados.")
     if "@" in parts.netloc or parts.username or parts.password:
@@ -118,7 +124,10 @@ def download_hop_url(url: str, *, issued_by: str) -> str:
 def redirect_target(current: str, location: str) -> str:
     """Valida el ``Location`` crudo antes de unirlo, porque ``urljoin`` normaliza «.» y «..»."""
     _check_text(location)
-    raw_path = urlsplit(location).path
+    try:
+        raw_path = urlsplit(location).path
+    except ValueError as exc:
+        raise UnsafeUrlError("La redirección no se puede interpretar.") from exc
     if any(part in {".", ".."} for part in raw_path.split("/") + unquote(raw_path).split("/")):
         raise UnsafeUrlError("La redirección tiene segmentos de ruta ambiguos.")
     return download_hop_url(urljoin(current, location), issued_by=current)
@@ -130,4 +139,5 @@ def is_challenge_url(url: str) -> bool:
         host = urlsplit(url).hostname
     except ValueError:
         return False
-    return host in CHALLENGE_HOSTS or (host or "").endswith(".perfdrive.com")
+    host = (host or "").rstrip(".")
+    return host in CHALLENGE_HOSTS or host.endswith(".perfdrive.com")

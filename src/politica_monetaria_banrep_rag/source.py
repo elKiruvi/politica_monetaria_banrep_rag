@@ -77,7 +77,10 @@ class ReportRecord:
 
 def _official_url(href: str, *, download: bool = False) -> str:
     _safe_text(href)
-    raw = urlsplit(href)
+    try:
+        raw = urlsplit(href)
+    except ValueError as exc:
+        raise SourceError("La fuente proporcionó una URL que no se puede interpretar.") from exc
     # urljoin normaliza «..»; por eso la ruta original se revisa antes de unirla.
     if not raw.path or any(part in {".", ".."} for part in unquote(raw.path).split("/")):
         raise SourceError("La fuente proporcionó una ruta vacía o ambigua.")

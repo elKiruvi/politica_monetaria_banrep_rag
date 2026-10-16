@@ -176,6 +176,13 @@ class PdfDownloader:
                     if response.status_code != 200:
                         raise DownloadError(f"La fuente devolvió HTTP {response.status_code}.")
                     return self._save(response, report_id, raw_dir, url, deadline)
+            except (httpx.InvalidURL, httpx.UnsupportedProtocol) as exc:
+                raise DownloadError("La fuente devolvió una redirección mal formada.") from exc
+            except httpx.RemoteProtocolError as exc:
+                if "location" in str(exc).lower():
+                    # httpx valida Location aunque no siga redirecciones; no es transitorio.
+                    raise DownloadError("La fuente devolvió una redirección mal formada.") from exc
+                raise _TransientDownloadError() from exc
             except httpx.HTTPError as exc:
                 raise _TransientDownloadError() from exc
         raise DownloadError("Se superó el número de redirecciones autorizadas.")

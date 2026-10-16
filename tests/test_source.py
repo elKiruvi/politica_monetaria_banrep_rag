@@ -243,3 +243,15 @@ def test_repeated_period_with_different_title_fails_closed():
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         with pytest.raises(SourceError, match="metadatos contradictorios"):
             BanrepSource(client).discover(2)
+
+
+@pytest.mark.parametrize("href", ["/x/../y.pdf", "https://[::1/x.pdf", "https://doi.org/%2e%2e/x"])
+def test_ambiguous_or_unparsable_download_href_is_source_error(href):
+    html = history(row("Informe de Política Monetaria - julio de 2026", "/es/x", href))
+    with pytest.raises(SourceError):
+        parse_history(html, "2026-10-16T00:00:00+00:00")
+
+
+def test_block_page_is_classified_as_blocked():
+    with pytest.raises(SourceBlockedError):
+        parse_history("<html>Radware Bot Manager Block</html>", "2026-10-16T00:00:00+00:00")

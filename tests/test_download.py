@@ -537,8 +537,11 @@ def test_html_instead_of_pdf_is_reported(tmp_path, report):
 
 def test_dspace_content_url_cannot_be_the_starting_point(tmp_path, report):
     url = "https://repositorio.banrep.gov.co/server/api/core/bitstreams/7a119fee-bead-43c1-9671-78e3f45ef54a/content"
-    with pytest.raises(DownloadError, match="no es oficial"):
-        PdfDownloader().download(replace(report, download_url=url), tmp_path)
+    forbidden = httpx.Client(
+        transport=httpx.MockTransport(lambda _: pytest.fail("Sin solicitudes"))
+    )
+    with forbidden, pytest.raises(DownloadError, match="no es oficial"):
+        PdfDownloader(forbidden).download(replace(report, download_url=url), tmp_path)
 
 
 @pytest.mark.parametrize(
@@ -562,3 +565,29 @@ def test_doi_cannot_redirect_straight_to_dspace_bitstreams(tmp_path, report, loc
         with pytest.raises(DownloadError, match="no autorizado"):
             PdfDownloader(client).download(report, tmp_path)
     assert visited == ["https://doi.org/rh7c"]
+
+
+@pytest.mark.parametrize(
+    "location",
+    ["https://repositorio.banrep.gov.co/a\tb.pdf", "https://[::1/x.pdf", "https://doi.org:99999/x"],
+)
+def test_malformed_location_is_permanent_not_retried(tmp_path, report, location):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(302, headers={"location": location})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(DownloadError, match="redirección mal formada|no autorizado"):
+            PdfDownloader(client).download(report, tmp_path)
+    assert len(calls) == 1
+
+
+def test_challenge_host_with_trailing_dot_is_blocked(tmp_path, report):
+    def respond(_):
+        return httpx.Response(302, headers={"location": "https://validate.perfdrive.com./x"})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(DownloadBlockedError):
+            PdfDownloader(client).download(report, tmp_path)

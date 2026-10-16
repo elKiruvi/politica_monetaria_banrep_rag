@@ -145,6 +145,14 @@ def test_failed_pointer_swap_leaves_previous_snapshot_active(tmp_path, pdf_bytes
         [report(4), report(7)],
         [report(7), report(7)],
         [report(7), replace(report(4), document_type="presentation")],
+        [
+            report(7),
+            replace(
+                report(4),
+                download_url="https://repositorio.banrep.gov.co/server/api/core/bitstreams/7a119fee-bead-43c1-9671-78e3f45ef54a/content",
+            ),
+        ],
+        [report(7), replace(report(4), download_url="https://evil.example/ipm.pdf")],
     ],
 )
 def test_invalid_window_never_downloads_or_activates(tmp_path, invalid):
