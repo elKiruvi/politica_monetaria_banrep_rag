@@ -1,0 +1,379 @@
+{
+ "message": {
+  "facets": {},
+  "items": [
+   {
+    "DOI": "10.32468/ber-norocc.tr3-2025",
+    "deposited": {
+     "date-parts": [
+      [
+       2025,
+       12,
+       9
+      ]
+     ],
+     "date-time": "2025-12-09T14:38:34Z",
+     "timestamp": 1765291114000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2025,
+       12,
+       4
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11307/ber-Noroccidente.tr3-2025.pdf"
+     }
+    },
+    "title": [
+     "Boletín Económico Regional : Noroccidente, III trimestre de 2025"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-jun-dir-con-rep-eng.01-2025",
+    "deposited": {
+     "date-parts": [
+      [
+       2025,
+       6,
+       17
+      ]
+     ],
+     "date-time": "2025-06-17T18:03:21Z",
+     "timestamp": 1750183401000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2025,
+       3,
+       10
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11142/inf-jun-dir-con-rep-eng.01-2025.pdf"
+     }
+    },
+    "title": [
+     "Report of the Board of Directors to the Congress of Colombia, February 2025"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-eng.tr1-2025",
+    "deposited": {
+     "date-parts": [
+      [
+       2025,
+       3,
+       17
+      ]
+     ],
+     "date-time": "2025-03-17T21:24:06Z",
+     "timestamp": 1742246646000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2025,
+       3,
+       17
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11152/Monetary-Policy-Report-January-2025.pdf"
+     }
+    },
+    "title": [
+     "Monetary Policy Report, January 2025"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-eng.tr2-2025",
+    "deposited": {
+     "date-parts": [
+      [
+       2025,
+       6,
+       20
+      ]
+     ],
+     "date-time": "2025-06-20T19:15:46Z",
+     "timestamp": 1750446946000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2025,
+       5,
+       6
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11170/inf-pol-mont-eng.tr2-2025.pdf"
+     }
+    },
+    "title": [
+     "Monetary Policy Report - April 2025"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-eng.tr3-2025",
+    "deposited": {
+     "date-parts": [
+      [
+       2025,
+       9,
+       23
+      ]
+     ],
+     "date-time": "2025-09-23T14:33:21Z",
+     "timestamp": 1758638001000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2025,
+       8,
+       5
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11254/inf-pol-mont-eng.tr3-2025.pdf"
+     }
+    },
+    "title": [
+     "Monetary Policy Report - July 2025"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-eng.tr4-2025",
+    "deposited": {
+     "date-parts": [
+      [
+       2025,
+       12,
+       15
+      ]
+     ],
+     "date-time": "2025-12-15T20:28:26Z",
+     "timestamp": 1765830506000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2025,
+       11,
+       5
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11294/MPR-October-2025.pdf"
+     }
+    },
+    "title": [
+     "Monetary Policy Report - October 2025"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-spa.tr1-2025",
+    "deposited": {
+     "date-parts": [
+      [
+       2025,
+       2,
+       5
+      ]
+     ],
+     "date-time": "2025-02-05T14:03:52Z",
+     "timestamp": 1738764232000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2025,
+       2,
+       4
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11091/IPM-Enero2025.pdf"
+     }
+    },
+    "title": [
+     "Informe de Política Monetaria - Enero de 2025"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-spa.tr2-2025",
+    "deposited": {
+     "date-parts": [
+      [
+       2025,
+       8,
+       6
+      ]
+     ],
+     "date-time": "2025-08-06T15:55:35Z",
+     "timestamp": 1754495735000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2025,
+       5,
+       6
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11169/inf-pol-mont-spa.tr2-2025.pdf"
+     }
+    },
+    "title": [
+     "Informe de Política Monetaria - abril 2025"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-spa.tr3-2025",
+    "deposited": {
+     "date-parts": [
+      [
+       2025,
+       12,
+       15
+      ]
+     ],
+     "date-time": "2025-12-15T21:02:17Z",
+     "timestamp": 1765832537000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2025,
+       8,
+       5
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11253/inf-pol-mont-spa.tr3-2025.pdf"
+     }
+    },
+    "title": [
+     "Informe de Política Monetaria - julio 2025"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-spa.tr4-2025",
+    "deposited": {
+     "date-parts": [
+      [
+       2025,
+       12,
+       15
+      ]
+     ],
+     "date-time": "2025-12-15T21:00:42Z",
+     "timestamp": 1765832442000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2025,
+       11,
+       5
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11293/inf-pol-mont-spa.tr4-2025.pdf"
+     }
+    },
+    "title": [
+     "Informe de Política Monetaria - Octubre de 2025"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/rml.35",
+    "deposited": {
+     "date-parts": [
+      [
+       2025,
+       8,
+       8
+      ]
+     ],
+     "date-time": "2025-08-08T23:14:02Z",
+     "timestamp": 1754694842000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2025,
+       8,
+       8
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11258/rml.35.pdf"
+     }
+    },
+    "title": [
+     "Crecimiento del empleo liderado por el área rural y dinámica de la participación laboral"
+    ],
+    "type": "report"
+   }
+  ],
+  "items-per-page": 1000,
+  "query": {
+   "search-terms": null,
+   "start-index": 0
+  },
+  "total-results": 11
+ },
+ "message-type": "work-list",
+ "message-version": "1.0.0",
+ "status": "ok"
+}

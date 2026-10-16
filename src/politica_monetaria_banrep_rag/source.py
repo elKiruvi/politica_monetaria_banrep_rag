@@ -4,6 +4,7 @@ import re
 import unicodedata
 from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
+from typing import Protocol
 from urllib.parse import unquote, urljoin, urlsplit
 
 import httpx
@@ -70,9 +71,23 @@ class ReportRecord:
     file_updated_at: str | None
     source_url: str
     download_url: str
+    doi: str | None = None
+    discovery_source: str = "historico"
+    metadata_deposited_at: str | None = None
+    source_updates: tuple[str, ...] = ()
 
-    def to_dict(self) -> dict[str, str | None]:
-        return asdict(self)
+    def to_dict(self) -> dict[str, object]:
+        data = asdict(self)
+        data["source_updates"] = list(self.source_updates)
+        return data
+
+
+class ReportSource(Protocol):
+    """Contrato de descubrimiento: devuelve exactamente la ventana verificada o falla."""
+
+    client: httpx.Client
+
+    def discover(self, max_reports: int = 12) -> list[ReportRecord]: ...
 
 
 def _official_url(href: str, *, download: bool = False) -> str:

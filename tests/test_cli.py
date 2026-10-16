@@ -10,6 +10,12 @@ from politica_monetaria_banrep_rag.download import PdfDownloader
 from politica_monetaria_banrep_rag.source import ReportRecord, SourceError
 
 
+@pytest.fixture(autouse=True)
+def historical_source_by_default(monkeypatch):
+    """Las pruebas heredadas sustituyen BanrepSource; se fija esa fuente explícitamente."""
+    monkeypatch.setenv("BANREP_SOURCE", "historico")
+
+
 def test_diagnostico(capsys, monkeypatch):
     monkeypatch.setenv("BANREP_MAX_REPORTS", "no_es_entero")
     monkeypatch.setattr("sys.argv", ["banrep-rag", "diagnostico"])
@@ -176,3 +182,42 @@ def test_sincronizar_closes_source_when_downloader_setup_fails(tmp_path, capsys,
     assert "fallo del sistema local en /certificados/inexistente.pem" in message
     assert "No such file" not in message
     assert all(client.is_closed for client in clients)
+
+
+def test_descubrir_uses_crossref_by_default(capsys, monkeypatch):
+    monkeypatch.delenv("BANREP_SOURCE")
+    monkeypatch.setenv("BANREP_CONTACT_EMAIL", "persona@example.org")
+    created = {}
+
+    class FakeCrossref:
+        def __init__(self, contact_email=None):
+            created["email"] = contact_email
+            self.client = httpx.Client(transport=httpx.MockTransport(lambda _: pytest.fail()))
+
+        def discover(self, count):
+            return [
+                ReportRecord(
+                    "ipm-2026-07", "Informe de Política Monetaria - julio de 2026", "main_report",
+                    "es", "2026-07", "2026-08-04", "crossref:published", "2026-10-16", None,
+                    "https://doi.org/10.32468/inf-pol-mont-spa.tr3-2026",
+                    "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11411/IPM-julio-2026.pdf",
+                    doi="10.32468/inf-pol-mont-spa.tr3-2026", discovery_source="crossref",
+                )
+            ][:count]  # fmt: skip
+
+    monkeypatch.setattr("politica_monetaria_banrep_rag.cli.CrossrefReportSource", FakeCrossref)
+    monkeypatch.setattr("sys.argv", ["banrep-rag", "descubrir", "--max-reports", "1", "--json"])
+    main()
+    data = json.loads(capsys.readouterr().out)
+    assert data[0]["doi"] == "10.32468/inf-pol-mont-spa.tr3-2026"
+    assert data[0]["discovery_source"] == "crossref"
+    assert created["email"] == "persona@example.org"
+
+
+def test_invalid_source_name_is_rejected_in_spanish(capsys, monkeypatch):
+    monkeypatch.setenv("BANREP_SOURCE", "dspace")
+    monkeypatch.setattr("sys.argv", ["banrep-rag", "descubrir"])
+    with pytest.raises(SystemExit) as error:
+        main()
+    assert error.value.code == 2
+    assert "«crossref» o «historico»" in capsys.readouterr().err

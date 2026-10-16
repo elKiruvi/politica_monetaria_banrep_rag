@@ -1,0 +1,417 @@
+{
+ "message": {
+  "facets": {},
+  "items": [
+   {
+    "DOI": "10.32468/be.1289",
+    "deposited": {
+     "date-parts": [
+      [
+       2025,
+       2,
+       13
+      ]
+     ],
+     "date-time": "2025-02-13T21:35:52Z",
+     "timestamp": 1739482552000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2024,
+       12,
+       20
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11051/be_1289.pdf"
+     }
+    },
+    "title": [
+     "Consumer Prices Trends in Colombia: Detecting Breaks and Forecasting Inflation"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/blog01022024",
+    "deposited": {
+     "date-parts": [
+      [
+       2024,
+       2,
+       1
+      ]
+     ],
+     "date-time": "2024-02-01T13:09:06Z",
+     "timestamp": 1706792946000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2024,
+       2,
+       1
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://www.banrep.gov.co/es/blog/estratos-discriminacion-precios-acceso-internet-alta-velocidad"
+     }
+    },
+    "title": [
+     "Estratos, discriminación de precios y acceso a internet de alta velocidad"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-eng.tr1-2024",
+    "deposited": {
+     "date-parts": [
+      [
+       2024,
+       3,
+       26
+      ]
+     ],
+     "date-time": "2024-03-26T15:39:20Z",
+     "timestamp": 1711467560000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2024,
+       3,
+       26
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10780/monetary-policy-january-2024.pdf"
+     }
+    },
+    "title": [
+     "Monetary Policy Report, January 2024"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-eng.tr2-2024",
+    "deposited": {
+     "date-parts": [
+      [
+       2024,
+       6,
+       15
+      ]
+     ],
+     "date-time": "2024-06-15T00:23:14Z",
+     "timestamp": 1718410994000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2024,
+       5,
+       3
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10789/monetary-policy-april-2024.pdf"
+     }
+    },
+    "title": [
+     "Monetary Policy Report, April 2024"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-eng.tr3-2024",
+    "deposited": {
+     "date-parts": [
+      [
+       2024,
+       9,
+       9
+      ]
+     ],
+     "date-time": "2024-09-09T17:53:50Z",
+     "timestamp": 1725904430000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2024,
+       8,
+       2
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10884/MPR-July2024.pdf"
+     }
+    },
+    "title": [
+     "Monetary Policy Report - July 2024"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-eng.tr4-2024",
+    "deposited": {
+     "date-parts": [
+      [
+       2024,
+       12,
+       11
+      ]
+     ],
+     "date-time": "2024-12-11T16:53:18Z",
+     "timestamp": 1733935998000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2024,
+       11,
+       6
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10983/monetary_Policy_Report_October_2024.pdf"
+     }
+    },
+    "title": [
+     "Monetary Policy Report - October 2024"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-spa.tr1-2024",
+    "deposited": {
+     "date-parts": [
+      [
+       2024,
+       2,
+       5
+      ]
+     ],
+     "date-time": "2024-02-05T13:05:07Z",
+     "timestamp": 1707138307000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2024,
+       2,
+       2
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10763/informe-politica-monetaria-enero-2024.pdf"
+     }
+    },
+    "title": [
+     "Informe de Política Monetaria - Enero de 2024"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-spa.tr2-2024",
+    "deposited": {
+     "date-parts": [
+      [
+       2024,
+       5,
+       8
+      ]
+     ],
+     "date-time": "2024-05-08T20:08:02Z",
+     "timestamp": 1715198882000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2024,
+       5,
+       3
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10788/informe-politica-monetaria-abril-2024.pdf"
+     }
+    },
+    "title": [
+     "Informe de Política Monetaria - Abril de 2024"
+    ],
+    "type": "report",
+    "update-to": [
+     {
+      "DOI": "10.32468/inf-pol-mont-spa.tr2-2024",
+      "label": "Correction",
+      "source": "publisher",
+      "type": "correction",
+      "updated": {
+       "date-parts": [
+        [
+         2024,
+         5,
+         8
+        ]
+       ],
+       "date-time": "2024-05-08T00:00:00Z",
+       "timestamp": 1715126400000
+      }
+     }
+    ],
+    "updated-by": [
+     {
+      "DOI": "10.32468/inf-pol-mont-spa.tr2-2024",
+      "label": "Correction",
+      "source": "publisher",
+      "type": "correction",
+      "updated": {
+       "date-parts": [
+        [
+         2024,
+         5,
+         8
+        ]
+       ],
+       "date-time": "2024-05-08T00:00:00Z",
+       "timestamp": 1715126400000
+      }
+     }
+    ]
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-spa.tr3-2024",
+    "deposited": {
+     "date-parts": [
+      [
+       2024,
+       8,
+       5
+      ]
+     ],
+     "date-time": "2024-08-05T16:03:43Z",
+     "timestamp": 1722873823000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2024,
+       8,
+       2
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10883/IPM-Julio-2024.pdf"
+     }
+    },
+    "title": [
+     "Informe de Política Monetaria - Julio de 2024"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-spa.tr4-2024",
+    "deposited": {
+     "date-parts": [
+      [
+       2024,
+       11,
+       6
+      ]
+     ],
+     "date-time": "2024-11-06T14:35:22Z",
+     "timestamp": 1730903722000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2024,
+       11,
+       6
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10981/IPM-Octubre2024"
+     }
+    },
+    "title": [
+     "Informe de Política Monetaria - Octubre de 2024"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/reporteinvestigaciones2020",
+    "deposited": {
+     "date-parts": [
+      [
+       2024,
+       12,
+       13
+      ]
+     ],
+     "date-time": "2024-12-13T15:40:36Z",
+     "timestamp": 1734104436000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2024,
+       12,
+       12
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11042/Reporte_Publicaciones_Banrep_2020.pdf"
+     }
+    },
+    "title": [
+     "Reporte Investigaciones Económicas Banrep - 2020"
+    ],
+    "type": "report"
+   }
+  ],
+  "items-per-page": 1000,
+  "query": {
+   "search-terms": null,
+   "start-index": 0
+  },
+  "total-results": 11
+ },
+ "message-type": "work-list",
+ "message-version": "1.0.0",
+ "status": "ok"
+}
