@@ -6,6 +6,7 @@ from politica_monetaria_banrep_rag.urls import (
     download_start_url,
     is_challenge_url,
     page_url,
+    redirect_target,
 )
 
 UUID = "7a119fee-bead-43c1-9671-78e3f45ef54a"
@@ -26,7 +27,7 @@ LEGACY = f"{REPO}/bitstream/handle/20.500.12134/11411/IPM-julio-2026.pdf"
 )
 def test_start_and_hop_accept_institutional_patterns(url):
     assert download_start_url(url) == url
-    assert download_hop_url(url) == url
+    assert download_hop_url(url, issued_by=LEGACY) == url
 
 
 @pytest.mark.parametrize(
@@ -34,7 +35,10 @@ def test_start_and_hop_accept_institutional_patterns(url):
     [f"{REPO}/bitstreams/{UUID}/download", f"{REPO}/server/api/core/bitstreams/{UUID}/content"],
 )
 def test_dspace_bitstreams_are_only_redirect_hops(url):
-    assert download_hop_url(url) == url
+    assert download_hop_url(url, issued_by=LEGACY) == url
+    for issuer in ["https://doi.org/rh7c", "https://www.banrep.gov.co/x.pdf"]:
+        with pytest.raises(UnsafeUrlError):
+            download_hop_url(url, issued_by=issuer)
     with pytest.raises(UnsafeUrlError):
         download_start_url(url)
 
@@ -60,6 +64,9 @@ def test_dspace_bitstreams_are_only_redirect_hops(url):
         f"{REPO}/bitstream/handle/20.500.12134/11411/a%5cb.pdf",
         f"{REPO}/bitstream/handle/20.500.12134/11411/a%00.pdf",
         f"{REPO}/bitstream/handle/20.500.12134/11411/a%0a.pdf",
+        f"{REPO}/bitstream/handle/20.500.12134/11411/%252e%252e",
+        f"{REPO}/bitstream/handle/20.500.12134/11411/a%252fserver.pdf",
+        f"{REPO}/bitstream/handle/20.500.12134/11411/IPM%2541.pdf",
         f"{REPO}//bitstreams/{UUID}/download",
         f"{REPO}/server/api/core/items/{UUID}",
         f"{REPO}/server/api/discover/search/objects",
@@ -78,7 +85,7 @@ def test_dspace_bitstreams_are_only_redirect_hops(url):
 )
 def test_hop_rejects_unsafe_or_unknown_urls(url):
     with pytest.raises(UnsafeUrlError):
-        download_hop_url(url)
+        download_hop_url(url, issued_by=LEGACY)
     with pytest.raises(UnsafeUrlError):
         download_start_url(url)
 
@@ -89,7 +96,7 @@ def test_challenge_hosts_are_detected():
     assert not is_challenge_url(LEGACY)
     assert not is_challenge_url("https://perfdrive.com.evil.example/")
     with pytest.raises(UnsafeUrlError, match="antibot"):
-        download_hop_url("https://validate.perfdrive.com/?ssa=1")
+        download_hop_url("https://validate.perfdrive.com/?ssa=1", issued_by=LEGACY)
 
 
 def test_page_url_rejects_fragments_and_foreign_hosts():
@@ -103,3 +110,27 @@ def test_page_url_rejects_fragments_and_foreign_hosts():
     ]:
         with pytest.raises(UnsafeUrlError):
             page_url(url)
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "/bitstream/handle/20.500.12134/11411/./IPM-julio-2026.pdf",
+        "/x/../bitstream/handle/20.500.12134/11411/IPM-julio-2026.pdf",
+        "/x/%2e%2e/bitstream/handle/20.500.12134/11411/IPM-julio-2026.pdf",
+        f"/bitstreams/{UUID}/./download",
+        "https://doi.org/./rh7c",
+        "\\evil.example/IPM.pdf",
+    ],
+)
+def test_redirect_location_is_checked_before_normalization(location):
+    with pytest.raises(UnsafeUrlError):
+        redirect_target(LEGACY, location)
+
+
+def test_relative_redirect_from_repository_is_joined():
+    assert redirect_target(LEGACY, f"/bitstreams/{UUID}/download") == (
+        f"{REPO}/bitstreams/{UUID}/download"
+    )
+    with pytest.raises(UnsafeUrlError):
+        redirect_target("https://doi.org/rh7c", f"{REPO}/server/api/core/bitstreams/{UUID}/content")

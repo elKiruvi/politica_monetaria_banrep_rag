@@ -8,7 +8,7 @@ prohíbe usarlas para descubrir contenido y este proyecto nunca las solicita por
 
 import re
 import unicodedata
-from urllib.parse import unquote, urlsplit
+from urllib.parse import unquote, urljoin, urlsplit
 
 SITE_HOSTS = frozenset({"www.banrep.gov.co", "banrep.gov.co"})
 REPOSITORY_HOST = "repositorio.banrep.gov.co"
@@ -49,6 +49,9 @@ def _parts(url: str, allowed_hosts: frozenset[str]):
         raise UnsafeUrlError("La URL no puede indicar puerto ni variantes del dominio.")
     decoded = unquote(parts.path)
     _check_text(decoded)
+    if "%" in decoded:
+        # Un escape anidado (p. ej. %252e) podría decodificarse otra vez más adelante.
+        raise UnsafeUrlError("La URL contiene escapes anidados.")
     segments = parts.path.split("/")[1:]
     if (
         not parts.path.startswith("/")
@@ -95,16 +98,30 @@ def download_start_url(url: str) -> str:
     return url
 
 
-def download_hop_url(url: str) -> str:
-    """Destino de una redirección durante la descarga; admite los bitstreams de DSpace."""
+def download_hop_url(url: str, *, issued_by: str) -> str:
+    """Destino de una redirección emitida por ``issued_by``.
+
+    Los bitstreams de DSpace solo se aceptan si la redirección la emite el propio repositorio;
+    un DOI u otro host no puede enviar la descarga directamente a esas rutas.
+    """
     if is_challenge_url(url):
         raise UnsafeUrlError("La redirección conduce a una verificación antibot.")
     parts = _parts(url, SITE_HOSTS | {DOI_HOST, REPOSITORY_HOST})
     if parts.query or parts.fragment:
         raise UnsafeUrlError("La redirección de descarga no puede tener parámetros ni fragmento.")
-    if not _download_path_ok(parts.hostname, parts.path, hop=True):
+    from_repository = urlsplit(issued_by).hostname == REPOSITORY_HOST
+    if not _download_path_ok(parts.hostname, parts.path, hop=from_repository):
         raise UnsafeUrlError("La redirección no coincide con un patrón institucional conocido.")
     return url
+
+
+def redirect_target(current: str, location: str) -> str:
+    """Valida el ``Location`` crudo antes de unirlo, porque ``urljoin`` normaliza «.» y «..»."""
+    _check_text(location)
+    raw_path = urlsplit(location).path
+    if any(part in {".", ".."} for part in raw_path.split("/") + unquote(raw_path).split("/")):
+        raise UnsafeUrlError("La redirección tiene segmentos de ruta ambiguos.")
+    return download_hop_url(urljoin(current, location), issued_by=current)
 
 
 def is_challenge_url(url: str) -> bool:

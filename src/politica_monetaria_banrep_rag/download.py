@@ -20,7 +20,7 @@ from pypdf import PdfReader
 from pypdf.errors import PyPdfError
 
 from politica_monetaria_banrep_rag.source import ReportRecord, SourceError, _official_url
-from politica_monetaria_banrep_rag.urls import UnsafeUrlError, download_hop_url, is_challenge_url
+from politica_monetaria_banrep_rag.urls import UnsafeUrlError, is_challenge_url, redirect_target
 
 
 class DownloadError(Exception):
@@ -163,7 +163,7 @@ class PdfDownloader:
                                 "importe un PDF obtenido legítimamente o reintente más tarde."
                             )
                         try:
-                            url = download_hop_url(target)
+                            url = redirect_target(url, location)
                         except UnsafeUrlError as exc:
                             raise DownloadError(
                                 "La redirección apunta a un destino no autorizado."

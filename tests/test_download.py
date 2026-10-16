@@ -539,3 +539,26 @@ def test_dspace_content_url_cannot_be_the_starting_point(tmp_path, report):
     url = "https://repositorio.banrep.gov.co/server/api/core/bitstreams/7a119fee-bead-43c1-9671-78e3f45ef54a/content"
     with pytest.raises(DownloadError, match="no es oficial"):
         PdfDownloader().download(replace(report, download_url=url), tmp_path)
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "https://repositorio.banrep.gov.co/server/api/core/bitstreams/7a119fee-bead-43c1-9671-78e3f45ef54a/content",
+        "https://repositorio.banrep.gov.co/bitstreams/7a119fee-bead-43c1-9671-78e3f45ef54a/download",
+        "https://repositorio.banrep.gov.co/x/../bitstream/handle/20.500.12134/1/IPM.pdf",
+    ],
+)
+def test_doi_cannot_redirect_straight_to_dspace_bitstreams(tmp_path, report, location):
+    visited = []
+
+    def respond(request):
+        visited.append(str(request.url))
+        if request.url.host == "doi.org":
+            return httpx.Response(302, headers={"location": location})
+        return httpx.Response(200, headers={"content-type": "application/pdf"}, content=b"%PDF-")
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(DownloadError, match="no autorizado"):
+            PdfDownloader(client).download(report, tmp_path)
+    assert visited == ["https://doi.org/rh7c"]
