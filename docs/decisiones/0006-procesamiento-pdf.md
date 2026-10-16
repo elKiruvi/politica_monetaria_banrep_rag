@@ -22,12 +22,12 @@
 | 2026-01 | 54 | 388 | 7 | 2 (regiones sin leyenda, pp. 41–42) | 0 | aceptable |
 | 2025-10 | 51 | 389 | 7 | 0 | 0 | aceptable |
 | 2025-07 | 54 | 388 | 7 | 0 | 0 | aceptable |
-| 2025-04 | 56 | 326 | 6 | 1 (anexo trimestral, continuación) | 593 (3 sin resolver) | aceptable |
-| 2025-01 | 61 | 427 | 6 | 7 (recuadros y anexo trimestral) | 650 (3 sin resolver) | degradado |
+| 2025-04 | 56 | 327 | 6 | 1 (anexo trimestral, continuación) | 593 (3 sin resolver) | aceptable |
+| 2025-01 | 61 | 359 | 6 | 8 (recuadros y anexo trimestral) | 650 (3 sin resolver) | degradado |
 
 **Verificación independiente con pypdf:** cada fila de cada cuadro reconstruido se busca en el texto de pypdf con la misma etiqueta y las cifras en el mismo orden (o con paso constante, porque pypdf a veces lee los anexos por columnas): 236/236 (julio y octubre de 2025), 239/239 (enero de 2026) y 170/172 (enero y abril de 2025; las 2 restantes coinciden con las mismas filas históricas de los otros informes). Cobertura de palabras de pypdf en las unidades: 0,94–0,97; lo ausente son ejes y leyendas de gráficos, fragmentos de palabras partidas por guion que aquí se unen y las formas rotas de ligaduras que aquí se reparan. En los cinco se reconstruyen el Cuadro 2.1, el Cuadro 3.1, el Anexo 1 (dos subtablas) y el Anexo 2 (anual y trimestral; su página de continuación sin título se conserva como «(continuación)»). Tiempo total: unos 30 s en un equipo de 12 núcleos.
 
-**Revisión independiente:** encontró que la página de continuación del anexo trimestral se perdía en silencio (corregido: una región sin leyenda nunca se descarta), recuadros sin nombre en la ruta de secciones, notas de cuadros recortadas sin otro fragmento (ahora `table_notes`), procesamiento todo o nada (ahora por informe), ligaduras sin contar en fuentes donde la ligadura es más frecuente que la «f» (ahora la referencia es la «f» más estrecha) y orden de lectura del resumen (ahora por altura, intercalando columnas).
+**Revisión independiente:** encontró que la página de continuación del anexo trimestral se perdía en silencio (corregido: una región sin leyenda nunca se descarta), recuadros sin nombre en la ruta de secciones, notas de cuadros recortadas sin otro fragmento (ahora `table_notes`), procesamiento todo o nada (ahora por informe), ligaduras sin contar en fuentes donde la ligadura es más frecuente que la «f» (ahora la referencia es la «f» más estrecha) y orden de lectura del resumen (ahora por altura, intercalando columnas). Una segunda ronda corrigió las subsecciones «x.y» de los recuadros (continuidad numérica; al salir se restaura la sección del texto principal) y las notas pequeñas («Significancia…», «* …») que se excluían como rótulos.
 
 ## Límites y riesgos
 

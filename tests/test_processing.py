@@ -247,3 +247,24 @@ def test_store_keeps_good_reports_when_one_fails_and_refreshes_metadata(tmp_path
     summaries[0].path.write_text("{truncado")
     summaries, failures = store.ensure(records)
     assert not summaries[0].cached and not failures
+
+
+def test_box_with_dotted_subsections_and_main_text_after_it(tmp_path):
+    path = tmp_path / "recuadro2.pdf"
+    items = [
+        (57, 780, 20, "3. Situación económica actual", "B"),
+        (291, 750, 9, "Recuadro 1 Un indicador de demanda", "R"),
+        (291, 730, 10, "2. Metodología", "B"),
+        (291, 710, 10, "2.1 Desbalance del crédito", "B"),
+        (291, 690, 10, "El desbalance se mide frente a su tendencia de largo plazo.", "R"),
+        (291, 660, 10, "3. Construcción del indicador agregado", "B"),
+        (291, 640, 10, "Se agregan los componentes con pesos estimados por factores.", "R"),
+        (291, 610, 10, "3.5 Mercado laboral", "B"),
+        (291, 590, 10, "La tasa de desempleo se mantuvo estable en el trimestre.", "R"),
+    ]
+    path.write_bytes(make_layout_pdf([items]))
+    sections = {u.text[:12]: u.section for u in process_pdf(path, "ipm-2025-10", "0" * 64).units}
+    box = "Recuadro 1 Un indicador de demanda"
+    assert sections["El desbalanc"] == (box, "2. Metodología", "2.1 Desbalance del crédito")
+    assert sections["Se agregan l"] == (box, "3. Construcción del indicador agregado")
+    assert sections["La tasa de d"] == ("3. Situación económica actual", "3.5 Mercado laboral")

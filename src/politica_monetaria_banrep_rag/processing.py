@@ -6,6 +6,7 @@ repetidas, interior de gráficos) se cuenta en el informe de calidad; nada se co
 información que no esté en el documento.
 """
 
+import re
 from collections import Counter
 from dataclasses import asdict, dataclass, field
 from pathlib import Path
@@ -138,6 +139,8 @@ def process_pdf(path: Path, report_id: str, sha256: str) -> ProcessedDocument:
     reconstructed = 0
     stack: list[tuple[int, str]] = []
     in_box = False  # dentro de un «Recuadro»: sus subtítulos «1.», «2.» cuelgan de él
+    box_numbers: dict[str, int] = {}  # apartado «N.» del recuadro → última subsección «N.M»
+    main_stack: list[tuple[int, str]] = []  # secciones del texto principal al abrir el recuadro
     previous_table: str | None = None
     pages_with_text = 0
     for page in layout.pages:
@@ -153,14 +156,25 @@ def process_pdf(path: Path, report_id: str, sha256: str) -> ProcessedDocument:
                 excluded[block.kind] += 1
                 continue
             if block.kind == "caption" and block.text.startswith("Recuadro"):
-                stack, in_box = [(1, block.text)], True
+                if not in_box:
+                    main_stack = stack
+                stack, in_box, box_numbers = [(1, block.text)], True, {}
                 continue
             if block.kind == "heading":
                 level = block.level or 1
-                if block.size >= 13 or (in_box and level >= 2):
-                    in_box = False  # nuevo capítulo o subsección numerada del texto principal
-                elif in_box:
+                number = re.match(r"(\d+)\.(\d+)?", block.text)
+                top, sub = (number[1], int(number[2] or 0)) if number else (None, 0)
+                if block.size >= 13:
+                    in_box = False  # nuevo capítulo
+                elif in_box and level == 1 and top:
+                    box_numbers[top] = 0
+                    level = 2
+                elif in_box and level >= 2 and top in box_numbers and sub == box_numbers[top] + 1:
+                    box_numbers[top] = sub  # «2.1», «2.2» seguidos dentro del apartado «2.»
                     level += 1
+                elif in_box and level >= 2:
+                    in_box = False  # subsección del texto principal («3.5») tras el recuadro
+                    stack = main_stack
                 stack = [(lvl, title) for lvl, title in stack if lvl < level] + [
                     (level, block.text)
                 ]

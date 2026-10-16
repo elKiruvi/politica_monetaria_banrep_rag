@@ -167,7 +167,7 @@ def _process(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         parser.exit(
             1,
             "".join(f"Error de procesamiento en {r}: {why}\n" for r, why in failures)
-            + "Los demás informes se procesaron y quedaron guardados.\n",
+            + ("Los demás informes se procesaron y quedaron guardados.\n" if summaries else ""),
         )
 
 
