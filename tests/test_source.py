@@ -220,3 +220,14 @@ def test_client_cannot_follow_redirects():
     with httpx.Client(follow_redirects=True) as client:
         with pytest.raises(ValueError, match="redirecciones"):
             BanrepSource(client)
+
+
+def test_repeated_period_with_different_title_fails_closed():
+    variant = july().replace("julio de 2026", "julio 2026")
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=history(variant if request.url.params else july()))
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(SourceError, match="metadatos contradictorios"):
+            BanrepSource(client).discover(2)

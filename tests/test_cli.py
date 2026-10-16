@@ -153,3 +153,26 @@ def test_sincronizar_reports_blocked_source_without_active_catalog(tmp_path, cap
     assert error.value.code == 1
     assert "Bloqueo del histórico" in capsys.readouterr().err
     assert not (tmp_path / "current.json").exists()
+
+
+def test_sincronizar_closes_source_when_downloader_setup_fails(tmp_path, capsys, monkeypatch):
+    clients = []
+
+    class Source:
+        def __init__(self):
+            self.client = httpx.Client(transport=httpx.MockTransport(lambda _: pytest.fail()))
+            clients.append(self.client)
+
+    def broken_downloader():
+        raise FileNotFoundError(2, "No such file", "/certificados/inexistente.pem")
+
+    monkeypatch.setattr("politica_monetaria_banrep_rag.cli.BanrepSource", Source)
+    monkeypatch.setattr("politica_monetaria_banrep_rag.cli.PdfDownloader", broken_downloader)
+    monkeypatch.setattr("sys.argv", ["banrep-rag", "sincronizar", "--data-dir", str(tmp_path)])
+    with pytest.raises(SystemExit) as error:
+        main()
+    assert error.value.code == 1
+    message = capsys.readouterr().err
+    assert "fallo del sistema local en /certificados/inexistente.pem" in message
+    assert "No such file" not in message
+    assert all(client.is_closed for client in clients)

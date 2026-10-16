@@ -3,11 +3,18 @@
 import argparse
 import json
 import os
+import sys
+from contextlib import ExitStack
 from pathlib import Path
 
 from politica_monetaria_banrep_rag.catalog import Catalog, CatalogError
 from politica_monetaria_banrep_rag.download import DownloadError, PdfDownloader
 from politica_monetaria_banrep_rag.source import BanrepSource, SourceError
+
+
+def _local_failure(exc: OSError) -> str:
+    target = f" en {exc.filename}" if exc.filename else ""
+    return f"fallo del sistema local{target} ({type(exc).__name__})."
 
 
 def main() -> None:
@@ -48,19 +55,29 @@ def main() -> None:
             root = (
                 Path(data_dir).expanduser() if data_dir else Path.home() / ".local/share/banrep-rag"
             )
-            source = BanrepSource()
-            downloader = PdfDownloader()
             try:
-                with source.client, downloader.client:
-                    snapshot_id = Catalog(root, source, downloader).sync(max_reports)
-            except (SourceError, DownloadError, CatalogError, OSError, ValueError) as exc:
+                with ExitStack() as stack:
+                    source = BanrepSource()
+                    stack.callback(source.client.close)
+                    downloader = PdfDownloader()
+                    stack.callback(downloader.client.close)
+                    catalog = Catalog(
+                        root, source, downloader, progress=lambda text: print(text, file=sys.stderr)
+                    )
+                    snapshot_id = catalog.sync(max_reports)
+            except OSError as exc:
+                parser.exit(1, f"Error de sincronización: {_local_failure(exc)}\n")
+            except (SourceError, DownloadError, CatalogError, ValueError) as exc:
                 parser.exit(1, f"Error de sincronización: {exc}\n")
             print(f"Catálogo activo: {snapshot_id}")
             return
         try:
-            source = BanrepSource()
-            with source.client:
+            with ExitStack() as stack:
+                source = BanrepSource()
+                stack.callback(source.client.close)
                 reports = source.discover(max_reports)
+        except OSError as exc:
+            parser.exit(1, f"Error de descubrimiento: {_local_failure(exc)}\n")
         except (SourceError, ValueError) as exc:
             parser.exit(1, f"Error de descubrimiento: {exc}\n")
         if args.json:

@@ -21,7 +21,7 @@ uv run --frozen ruff check .
 
 ## Sincronización local experimental
 
-`uv run --frozen banrep-rag sincronizar --max-reports 12 --data-dir ./datos` intenta descubrir, descargar y verificar los doce PDF principales antes de activar un catálogo en `./datos/current.json`. Por defecto usa `~/.local/share/banrep-rag`; `BANREP_DATA_DIR` cambia esa ruta. Las versiones anteriores permanecen en `snapshots/` y `raw/`. Ante un fallo previo a la activación, el catálogo anterior sigue activo; puede haber archivos nuevos no activos. No se redistribuyen estos PDF.
+`uv run --frozen banrep-rag sincronizar --max-reports 12 --data-dir ./datos` intenta descubrir, descargar y verificar los doce PDF principales antes de activar un catálogo en `./datos/current.json`. Por defecto usa `~/.local/share/banrep-rag`; `BANREP_DATA_DIR` cambia esa ruta. Muestra el avance por la salida de errores y desiste si la operación completa supera 30 minutos. Las versiones anteriores permanecen en `snapshots/` y `raw/`. Ante un fallo previo a la activación, el catálogo anterior sigue activo; puede haber archivos nuevos no activos. No se redistribuyen estos PDF.
 
 **No se ha comprobado una sincronización real de doce PDF:** Banrep bloqueó la paginación y el DOI comprobado redirigió fuera de los dominios autorizados. El comando falla cerrado; no intentes eludir sus controles ni interpretes un snapshot de catálogo como índice RAG. La [decisión de snapshots](docs/decisiones/0003-catalogo-snapshots.md) detalla sus límites.
 

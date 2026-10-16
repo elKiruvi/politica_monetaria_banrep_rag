@@ -1,6 +1,8 @@
 import io
 import json
 import os
+import subprocess
+import sys
 from dataclasses import replace
 
 import httpx
@@ -204,3 +206,36 @@ def test_raw_directory_sync_failure_keeps_prior_pointer(tmp_path, pdf_bytes, mon
         with pytest.raises(OSError, match="Directorio"):
             catalog.sync(2)
     assert catalog.current()[0] == original
+
+
+def test_catalog_imports_without_fcntl():
+    code = "import sys; sys.modules['fcntl'] = None; import politica_monetaria_banrep_rag.cli"
+    assert subprocess.run([sys.executable, "-c", code], check=False).returncode == 0
+
+
+def test_total_deadline_stops_before_activation(tmp_path, pdf_bytes):
+    ticks = iter([0.0, 0.0, 5000.0])
+    messages = []
+    client = httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        )
+    )
+    catalog = Catalog(
+        tmp_path / "estado",
+        Source([report(7), report(4)]),
+        PdfDownloader(client, attempts=1),
+        progress=messages.append,
+        max_seconds=60,
+        clock=lambda: next(ticks),
+    )
+    with client, pytest.raises(CatalogError, match="plazo total"):
+        catalog.sync(2)
+    assert not (catalog.root / "current.json").exists()
+    assert messages[-1] == "Descargando 1/2: ipm-2026-07…"
+
+
+@pytest.mark.parametrize("limit", [0, -1, float("inf"), float("nan")])
+def test_invalid_total_deadline_is_rejected(tmp_path, limit):
+    with pytest.raises(ValueError, match="plazo total"):
+        Catalog(tmp_path, Source([]), PdfDownloader(), max_seconds=limit)

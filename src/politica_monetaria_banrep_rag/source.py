@@ -2,7 +2,7 @@
 
 import re
 import unicodedata
-from dataclasses import asdict, dataclass
+from dataclasses import asdict, dataclass, replace
 from datetime import UTC, datetime
 from urllib.parse import unquote, urljoin, urlsplit
 
@@ -208,8 +208,16 @@ class BanrepSource:
                 first_page = _page_signature(reports)
             for report in reports:
                 previous = selected.get(report.report_id)
-                if previous is not None and previous.download_url != report.download_url:
-                    raise SourceError("Un periodo tiene descargas contradictorias entre páginas.")
+                if previous is not None:
+                    if previous.download_url != report.download_url:
+                        raise SourceError(
+                            "Un periodo tiene descargas contradictorias entre páginas."
+                        )
+                    if replace(report, discovered_at=previous.discovered_at) != previous:
+                        raise SourceError(
+                            "Un periodo tiene metadatos contradictorios entre páginas."
+                        )
+                    continue
                 selected[report.report_id] = report
             if len(selected) >= max_reports:
                 if page > 0 and first_page != _page_signature(self._fetch_page(0)):

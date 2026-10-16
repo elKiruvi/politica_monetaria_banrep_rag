@@ -1,12 +1,15 @@
 """Catálogo local: snapshots inmutables y activación atómica tras descargar la ventana."""
 
-import fcntl
 import hashlib
 import json
 import os
 import re
+import sys
 import tempfile
+import time
+from collections.abc import Callable
 from pathlib import Path
+from typing import BinaryIO
 
 from politica_monetaria_banrep_rag.download import PdfDownloader
 from politica_monetaria_banrep_rag.source import (
@@ -28,6 +31,8 @@ def _json_bytes(value: object) -> bytes:
 
 
 def _sync_directory(path: Path) -> None:
+    if sys.platform == "win32":
+        return  # Windows no permite abrir directorios para fsync; os.replace sigue siendo atómico.
     fd = os.open(path, os.O_RDONLY)
     try:
         os.fsync(fd)
@@ -50,13 +55,40 @@ def _atomic_write(path: Path, data: bytes) -> None:
         tmp.unlink(missing_ok=True)
 
 
+def _lock_exclusive(handle: BinaryIO) -> None:
+    """Bloquea el archivo de control; en Windows `msvcrt` reintenta durante unos 10 s."""
+    if sys.platform == "win32":
+        import msvcrt
+
+        handle.seek(0)
+        msvcrt.locking(handle.fileno(), msvcrt.LK_LOCK, 1)
+    else:
+        import fcntl
+
+        fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
+
+
 class Catalog:
     """Serializa sincronizaciones; nunca publica una ventana incompleta."""
 
-    def __init__(self, root: Path, source: BanrepSource, downloader: PdfDownloader):
+    def __init__(
+        self,
+        root: Path,
+        source: BanrepSource,
+        downloader: PdfDownloader,
+        *,
+        progress: Callable[[str], None] | None = None,
+        max_seconds: float = 1800,
+        clock: Callable[[], float] = time.monotonic,
+    ):
+        if not 0 < max_seconds < float("inf"):
+            raise ValueError("El plazo total de sincronización debe ser positivo.")
         self.root = root
         self.source = source
         self.downloader = downloader
+        self.progress = progress or (lambda _: None)
+        self.max_seconds = max_seconds
+        self.clock = clock
 
     def current(self) -> tuple[str, dict[str, object]] | None:
         pointer = self.root / "current.json"
@@ -89,14 +121,21 @@ class Catalog:
         ):
             raise ValueError("max_reports debe estar entre 1 y 100.")
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        deadline = self.clock() + self.max_seconds
         with (self.root / ".sync.lock").open("a+b") as lock:
-            fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+            _lock_exclusive(lock)
             self.current()  # Un puntero anterior dañado nunca se reemplaza silenciosamente.
+            self.progress(f"Verificando los {max_reports} informes principales en la fuente…")
             reports = self.source.discover(max_reports)
             self._validate_window(reports, max_reports)
             records: list[dict[str, object]] = []
             raw_dir = self.root / "raw"
-            for report in reports:
+            for position, report in enumerate(reports, start=1):
+                if self.clock() >= deadline:
+                    raise CatalogError(
+                        "La sincronización superó el plazo total; se conserva el catálogo anterior."
+                    )
+                self.progress(f"Descargando {position}/{len(reports)}: {report.report_id}…")
                 result = self.downloader.download(report, raw_dir)
                 expected_name = f"{report.report_id}-{result.sha256}.pdf"
                 if (
@@ -136,8 +175,13 @@ class Catalog:
                     raise CatalogError("Un snapshot existente no coincide con su identificador.")
             else:
                 _atomic_write(snapshot_path, data)
+            if self.clock() >= deadline:
+                raise CatalogError(
+                    "La sincronización superó el plazo total; se conserva el catálogo anterior."
+                )
             active = self.current()
             if active is None or active[0] != snapshot_id:
+                self.progress("Activando el nuevo catálogo…")
                 _atomic_write(
                     self.root / "current.json", _json_bytes({"version": 1, "snapshot": snapshot_id})
                 )
