@@ -3,12 +3,10 @@
 import hashlib
 import io
 import os
-import random
 import re
 import tempfile
 import time
 from dataclasses import dataclass
-from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -42,10 +40,20 @@ class PdfDownloader:
         *,
         max_bytes: int = 30_000_000,
         max_pages: int = 400,
-        attempts: int = 3,
+        max_seconds: float = 180,
     ) -> None:
-        if min(max_bytes, max_pages, attempts) < 1:
+        if min(max_bytes, max_pages, max_seconds) < 1:
             raise ValueError("Los límites de descarga deben ser positivos.")
+        if client is not None and (
+            client.auth is not None
+            or any(
+                client.headers.get(name)
+                for name in ("Authorization", "Proxy-Authorization", "Cookie")
+            )
+            or client.cookies
+            or any(client.event_hooks.values())
+        ):
+            raise ValueError("La descarga pública no admite clientes con credenciales ni hooks.")
         self.client = client or httpx.Client(
             timeout=httpx.Timeout(45, connect=5, read=30),
             follow_redirects=False,
@@ -56,7 +64,7 @@ class PdfDownloader:
         )
         self.max_bytes = max_bytes
         self.max_pages = max_pages
-        self.attempts = attempts
+        self.max_seconds = max_seconds
 
     def download(self, report: ReportRecord, raw_dir: Path) -> DownloadResult:
         if not re.fullmatch(r"ipm-\d{4}-\d{2}", report.report_id):
@@ -65,18 +73,19 @@ class PdfDownloader:
             url = _official_url(report.download_url, download=True)
         except SourceError as exc:
             raise DownloadError("La URL de descarga no es oficial o válida.") from exc
-        for attempt in range(self.attempts):
-            try:
-                return self._download_once(report.report_id, url, raw_dir)
-            except _RetryableError as exc:
-                if attempt == self.attempts - 1:
-                    raise DownloadError("La descarga falló después de los reintentos.") from exc
-                delay = exc.delay if exc.delay is not None else 2**attempt + random.random()
-                time.sleep(min(delay, 10))
-        raise DownloadError("No se completó la descarga.")
+        deadline = time.monotonic() + self.max_seconds
+        return self._download_once(report.report_id, url, raw_dir, deadline)
 
-    def _download_once(self, report_id: str, url: str, raw_dir: Path) -> DownloadResult:
+    @staticmethod
+    def _check_deadline(deadline: float) -> None:
+        if time.monotonic() >= deadline:
+            raise DownloadError("La descarga superó el tiempo máximo.")
+
+    def _download_once(
+        self, report_id: str, url: str, raw_dir: Path, deadline: float
+    ) -> DownloadResult:
         for _ in range(6):
+            self._check_deadline(deadline)
             try:
                 with self.client.stream("GET", url, follow_redirects=False) as response:
                     if response.status_code in {301, 302, 303, 307, 308}:
@@ -90,17 +99,15 @@ class PdfDownloader:
                                 "La redirección apunta a un destino no autorizado."
                             ) from exc
                         continue
-                    if response.status_code == 429 or response.status_code >= 500:
-                        raise _RetryableError(_retry_delay(response.headers.get("retry-after")))
                     if response.status_code != 200:
                         raise DownloadError(f"La fuente devolvió HTTP {response.status_code}.")
-                    return self._save(response, report_id, raw_dir, url)
+                    return self._save(response, report_id, raw_dir, url, deadline)
             except httpx.HTTPError as exc:
-                raise _RetryableError() from exc
+                raise DownloadError("No se pudo leer el PDF remoto.") from exc
         raise DownloadError("Se superó el número de redirecciones autorizadas.")
 
     def _save(
-        self, response: httpx.Response, report_id: str, raw_dir: Path, url: str
+        self, response: httpx.Response, report_id: str, raw_dir: Path, url: str, deadline: float
     ) -> DownloadResult:
         mime = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
         encoded = response.headers.get("content-encoding", "identity").lower() != "identity"
@@ -120,6 +127,7 @@ class PdfDownloader:
         try:
             with os.fdopen(fd, "wb") as handle:
                 for block in response.iter_bytes(chunk_size=65_536):
+                    self._check_deadline(deadline)
                     total += len(block)
                     if total > self.max_bytes:
                         raise DownloadError("El archivo excede el límite de tamaño.")
@@ -131,6 +139,7 @@ class PdfDownloader:
                 raise DownloadError("La descarga está truncada o tiene un tamaño contradictorio.")
             if total < 8:
                 raise DownloadError("La descarga PDF está vacía o incompleta.")
+            self._check_deadline(deadline)
             with tmp.open("rb") as handle:
                 if handle.read(5) != b"%PDF-":
                     raise DownloadError("La firma PDF no es válida.")
@@ -145,32 +154,9 @@ class PdfDownloader:
             if pages < 1 or pages > self.max_pages:
                 raise DownloadError("El número de páginas excede los límites permitidos.")
             target = raw_dir / f"{report_id}-{digest.hexdigest()}.pdf"
-            if target.is_file() and not target.is_symlink() and target.stat().st_size == total:
-                with target.open("rb") as existing:
-                    if hashlib.file_digest(existing, "sha256").hexdigest() == digest.hexdigest():
-                        return DownloadResult(
-                            target, digest.hexdigest(), total, pages, url, mime or "application/pdf"
-                        )
             os.replace(tmp, target)
             return DownloadResult(
                 target, digest.hexdigest(), total, pages, url, mime or "application/pdf"
             )
         finally:
             tmp.unlink(missing_ok=True)
-
-
-class _RetryableError(Exception):
-    def __init__(self, delay: float | None = None):
-        self.delay = delay
-
-
-def _retry_delay(value: str | None) -> float | None:
-    if not value:
-        return None
-    try:
-        return max(0, min(float(value), 10))
-    except ValueError:
-        try:
-            return max(0, min((parsedate_to_datetime(value).timestamp() - time.time()), 10))
-        except (TypeError, ValueError):
-            return None

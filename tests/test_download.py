@@ -60,32 +60,6 @@ def test_redirects_to_official_repository_and_saves_atomically(tmp_path, report,
     assert list(tmp_path.glob(".descarga-*")) == []
 
 
-def test_same_bytes_are_idempotent_and_correction_preserves_first_copy(tmp_path, report, pdf_bytes):
-    writer = PdfWriter()
-    writer.add_blank_page(width=200, height=200)
-    writer.add_metadata({"/Title": "Corrección sintética"})
-    output = io.BytesIO()
-    writer.write(output)
-    newer = output.getvalue()
-    delivered = [pdf_bytes, pdf_bytes, newer]
-
-    def respond(_):
-        return httpx.Response(
-            200, headers={"content-type": "application/pdf"}, content=delivered.pop(0)
-        )
-
-    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        downloader = PdfDownloader(client)
-        first = downloader.download(report, tmp_path)
-        initial_mtime = first.path.stat().st_mtime_ns
-        assert downloader.download(report, tmp_path).path == first.path
-        assert first.path.stat().st_mtime_ns == initial_mtime
-        updated = downloader.download(report, tmp_path)
-        assert updated.sha256 != first.sha256
-        assert first.path.read_bytes() == pdf_bytes
-        assert updated.path.read_bytes() == newer
-
-
 @pytest.mark.parametrize(
     "status,headers,body",
     [
@@ -105,7 +79,7 @@ def test_rejects_unsafe_or_invalid_responses(tmp_path, report, status, headers, 
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         with pytest.raises(DownloadError):
-            PdfDownloader(client, attempts=1).download(report, tmp_path)
+            PdfDownloader(client).download(report, tmp_path)
     assert len(visited) == 1
     assert list(tmp_path.glob("*.pdf")) == []
     assert list(tmp_path.glob(".descarga-*")) == []
@@ -124,24 +98,6 @@ def test_bad_report_id_cannot_traverse_directories(tmp_path, report):
     with pytest.raises(DownloadError, match="identificador"):
         PdfDownloader().download(replace(report, report_id="../archivo"), tmp_path)
     assert not list(tmp_path.iterdir())
-
-
-def test_retry_after_then_success(tmp_path, report, pdf_bytes, monkeypatch):
-    calls = 0
-    delays = []
-    monkeypatch.setattr("politica_monetaria_banrep_rag.download.time.sleep", delays.append)
-
-    def respond(_):
-        nonlocal calls
-        calls += 1
-        if calls == 1:
-            return httpx.Response(429, headers={"retry-after": "0"})
-        return httpx.Response(200, content=pdf_bytes)
-
-    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        assert PdfDownloader(client).download(report, tmp_path).pages_count == 1
-    assert calls == 2
-    assert delays == [0]
 
 
 def test_gzip_transport_uses_uncompressed_pdf_size(tmp_path, report, pdf_bytes):
@@ -170,8 +126,8 @@ def test_interrupted_stream_removes_partial_file(tmp_path, report):
     with httpx.Client(
         transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=BrokenStream()))
     ) as client:
-        with pytest.raises(DownloadError, match="reintentos"):
-            PdfDownloader(client, attempts=1).download(report, tmp_path)
+        with pytest.raises(DownloadError, match="leer el PDF"):
+            PdfDownloader(client).download(report, tmp_path)
     assert list(tmp_path.iterdir()) == []
 
 
@@ -186,4 +142,30 @@ def test_page_limit_rejects_valid_pdf_without_saving(tmp_path, report):
     ) as client:
         with pytest.raises(DownloadError, match="páginas"):
             PdfDownloader(client, max_pages=1).download(report, tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+@pytest.mark.parametrize(
+    "kwargs", [{"auth": ("usuario", "secreto")}, {"headers": {"Cookie": "sesion=privada"}}]
+)
+def test_rejects_authenticated_clients(kwargs):
+    with httpx.Client(**kwargs) as client:
+        with pytest.raises(ValueError, match="credenciales"):
+            PdfDownloader(client)
+
+
+def test_total_deadline_aborts_stream_and_cleans_file(tmp_path, report, pdf_bytes, monkeypatch):
+    clock = 0
+
+    def monotonic():
+        nonlocal clock
+        clock += 1
+        return clock
+
+    monkeypatch.setattr("politica_monetaria_banrep_rag.download.time.monotonic", monotonic)
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda _: httpx.Response(200, content=pdf_bytes))
+    ) as client:
+        with pytest.raises(DownloadError, match="tiempo máximo"):
+            PdfDownloader(client, max_seconds=2).download(report, tmp_path)
     assert list(tmp_path.iterdir()) == []
