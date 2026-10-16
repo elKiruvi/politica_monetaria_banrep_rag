@@ -34,9 +34,12 @@ jobs:
           if [ "$DESCARGAR_UNO" = "true" ]; then args+=(--descargar-uno); fi
           uv run --frozen banrep-rag diagnostico-fuentes "${args[@]}" > diagnostico.json
       - name: Resumen
+        if: always()
         run: |
+          if [ ! -s diagnostico.json ]; then echo "El diagnóstico no produjo resultados." >> "$GITHUB_STEP_SUMMARY"; exit 0; fi
           uv run --frozen python -c "import json; from politica_monetaria_banrep_rag.diagnostics import render; print(render(json.load(open('diagnostico.json'))))" >> "$GITHUB_STEP_SUMMARY"
       - uses: actions/upload-artifact@v4
+        if: always()
         with:
           name: diagnostico-fuentes
           path: diagnostico.json

@@ -44,6 +44,8 @@ def _safe_location(value: str | None) -> str | None:
     if not value:
         return None
     parts = urlsplit(value)
+    if is_challenge_url(value):
+        return f"{parts.scheme}://{parts.netloc}/"  # La ruta del reto también puede llevar datos.
     return f"{parts.scheme}://{parts.netloc}{parts.path}" if parts.netloc else parts.path
 
 
@@ -118,9 +120,10 @@ def run(
                 ProbeResult("crossref_ultimo_informe", CROSSREF_WORKS_URL, "ok", 200,
                             detail=f"{latest.reference_period} {latest.doi}")
             )  # fmt: skip
-        except SourceError as exc:
+        except Exception as exc:  # noqa: BLE001 - el diagnóstico debe informar, no abortar.
+            detail = str(exc) if isinstance(exc, SourceError) else type(exc).__name__
             results.append(ProbeResult("crossref_ultimo_informe", CROSSREF_WORKS_URL, "error",
-                                       detail=str(exc)))  # fmt: skip
+                                       detail=detail))  # fmt: skip
         targets = [
             ("historico_portada", HISTORY_URL),
             ("repositorio_robots", "https://repositorio.banrep.gov.co/robots.txt"),
@@ -173,6 +176,24 @@ def _download(report: ReportRecord) -> dict[str, object]:
         }
 
 
+def _cell(value: object) -> str:
+    """Escapa texto externo para que no altere la tabla Markdown del resumen."""
+    text = " ".join(str(value or "").split())
+    for char, escaped in (
+        ("\\", "\\\\"),
+        ("|", "\\|"),
+        ("<", "&lt;"),
+        (">", "&gt;"),
+        ("[", "\\["),
+        ("]", "\\]"),
+        ("`", "\\`"),
+        ("*", "\\*"),
+        ("_", "\\_"),
+    ):
+        text = text.replace(char, escaped)
+    return text
+
+
 def render(report: dict[str, object]) -> str:
     """Tabla Markdown para la salida humana y el resumen de GitHub Actions."""
     lines = [
@@ -185,12 +206,13 @@ def render(report: dict[str, object]) -> str:
     assert isinstance(rows, list)
     for row in rows:
         assert isinstance(row, dict)
-        detail = row.get("location") or row.get("detail") or ""
-        lines.append(
-            f"| {row['name']} | {row['outcome']} | {row.get('status') or ''} "
-            f"| {row.get('content_type') or ''} | {detail} |"
-        )
+        detail = row.get("location") or row.get("detail")
+        cells = [row["name"], row["outcome"], row.get("status"), row.get("content_type"), detail]
+        lines.append("| " + " | ".join(_cell(cell) for cell in cells) + " |")
     download = report.get("descarga")
     if isinstance(download, dict):
-        lines += ["", "Descarga de prueba: " + ", ".join(f"{k}={v}" for k, v in download.items())]
+        lines += [
+            "",
+            "Descarga de prueba: " + ", ".join(f"{k}={_cell(v)}" for k, v in download.items()),
+        ]
     return "\n".join(lines)

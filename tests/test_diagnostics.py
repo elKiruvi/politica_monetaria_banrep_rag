@@ -28,7 +28,11 @@ def crossref_payload():
 def respond(request: httpx.Request) -> httpx.Response:
     url = str(request.url)
     if request.url.host == "api.crossref.org":
-        return httpx.Response(200, json=crossref_payload())
+        if "2026-01-01" in request.url.params.get("filter", "2026-01-01"):
+            return httpx.Response(200, json=crossref_payload())
+        empty = {"status": "ok", "message-type": "work-list",
+                 "message": {"total-results": 0, "items": []}}  # fmt: skip
+        return httpx.Response(200, json=empty)
     if "page=1" in url:
         return httpx.Response(200, text="<html>Radware Bot Manager Block</html>")
     if request.url.host == "www.banrep.gov.co":
@@ -60,7 +64,7 @@ def test_run_classifies_probes_and_hides_challenge_query():
     text = json.dumps(report)
     assert "MjA2" not in text and "ssa=" not in text
     assert "https://validate.perfdrive.com/" in text
-    assert all(p == 2.0 for p in pauses)
+    assert pauses.count(2.0) == 5 and set(pauses) <= {0.5, 2.0}
     assert report["descarga"] is None
     assert "| pdf_ultimo_informe | reto_antibot | 302 |" in diagnostics.render(report)
 
@@ -132,3 +136,41 @@ def test_cli_prints_table(capsys, monkeypatch):
     monkeypatch.setattr("sys.argv", ["banrep-rag", "diagnostico-fuentes"])
     main()
     assert "| crossref | ok | 200 |" in capsys.readouterr().out
+
+
+def test_unexpected_discovery_failure_keeps_other_probes(monkeypatch):
+    class Broken:
+        def __init__(self, *args, **kwargs):
+            pass
+
+        def discover(self, count):
+            raise KeyError("julıo")
+
+    monkeypatch.setattr(diagnostics, "CrossrefReportSource", Broken)
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        report = diagnostics.run(client=client, pause=lambda _: None)
+    rows = {row["name"]: row for row in report["sondas"]}
+    assert rows["crossref_ultimo_informe"]["outcome"] == "error"
+    assert rows["crossref_ultimo_informe"]["detail"] == "KeyError"
+    assert rows["historico_portada"]["outcome"] == "ok"
+
+
+def test_render_escapes_markdown_from_external_text():
+    report = {
+        "iniciado": "x",
+        "sondas": [{"name": "a", "outcome": "error", "status": None, "content_type": None,
+                    "location": None, "detail": "x | [clic](https://evil.example) <b>"}],
+        "descarga": None,
+    }  # fmt: skip
+    line = diagnostics.render(report).splitlines()[-1]
+    assert line.count(" | ") == 4
+    assert "<b>" not in line and "\\[clic\\]" in line
+
+
+def test_challenge_location_keeps_only_host():
+    assert (
+        diagnostics._safe_location(
+            "https://validate.perfdrive.com/MjA2Ljg0LjgxLjIyMA==/captcha?ssr=1"
+        )
+        == "https://validate.perfdrive.com/"
+    )
