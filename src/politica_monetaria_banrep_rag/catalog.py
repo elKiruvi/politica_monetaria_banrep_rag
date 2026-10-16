@@ -19,7 +19,7 @@ from politica_monetaria_banrep_rag.download import (
     PdfDownloader,
     inspect_pdf,
 )
-from politica_monetaria_banrep_rag.importer import Identification
+from politica_monetaria_banrep_rag.importer import Identification, ImportFileError, identify
 from politica_monetaria_banrep_rag.source import (
     MONTHS,
     ReportRecord,
@@ -74,8 +74,23 @@ def _check_entry(report_id: str, item: dict[str, object]) -> None:
         or not all(isinstance(item[k], str) for k in ("final_url", "mime_type", "download_url"))
         or not isinstance(item["verified_at"], str)
         or not _ISO_SECONDS.fullmatch(item["verified_at"])
+        or item.get("method", "download") not in {"download", "local_import"}
     ):
         raise ValueError("Entrada inválida")
+    if item.get("method") == "local_import":
+        report = item.get("report")
+        evidence = item.get("identified_by")
+        if (
+            not isinstance(item.get("source_name"), str)
+            or not isinstance(evidence, list)
+            or not all(isinstance(e, str) for e in evidence)
+            or not isinstance(item.get("metadata_verified"), bool)
+            or not isinstance(report, dict)
+            or report.get("report_id") != report_id
+            or report.get("reference_period") != report_id[4:]
+            or not isinstance(report.get("title"), str)
+        ):
+            raise ValueError("Entrada de importación inválida")
 
 
 def _is_import(entry: dict[str, object]) -> bool:
@@ -270,7 +285,9 @@ class Catalog:
                                 f"Aviso: no se pudo descargar {report.report_id}; se usa el PDF "
                                 f"importado localmente el {imported['verified_at']}."
                             )
-                            records.append(self._import_record(imported, metadata))
+                            records.append(
+                                self._import_record(imported, metadata, metadata_verified=True)
+                            )
                             continue
                         if previous is None or not transient:
                             raise
@@ -327,27 +344,42 @@ class Catalog:
         return snapshot_id
 
     def import_pdf(
-        self, source_path: Path, identification: Identification, report: ReportRecord | None
+        self,
+        source_path: Path,
+        *,
+        expected_period: str | None = None,
+        lookup: Callable[[str], ReportRecord | None] | None = None,
+        replace: bool = False,
     ) -> dict[str, object]:
-        """Copia un PDF local validado a ``raw/`` y lo registra con procedencia ``local_import``."""
-        report_id = identification.report_id
-        if not re.fullmatch(r"ipm-\d{4}-(0[1-9]|1[0-2])", report_id):
-            raise CatalogError("El identificador del informe importado no es válido.")
-        if report is not None and report.report_id != report_id:
-            raise CatalogError("Los metadatos verificados corresponden a otro periodo.")
-        if not source_path.is_file() or source_path.stat().st_size > _MAX_IMPORT_BYTES:
-            raise CatalogError("El archivo a importar no existe o excede 30 MB.")
+        """Copia el PDF a ``raw/``, lo identifica sobre la copia y lo registra como importado.
+
+        La identificación y la validación se hacen sobre la copia privada (no sobre el archivo
+        de la persona, que podría cambiar entre medias). ``lookup`` verifica el periodo en
+        Crossref; sin él, los metadatos quedan como no verificados y solo se admiten los meses
+        habituales del informe. Un PDF distinto para un periodo ya importado exige ``replace``.
+        """
+        if not source_path.exists():
+            raise CatalogError(f"El archivo «{source_path.name}» no existe.")
+        if not source_path.is_file():
+            raise CatalogError(f"«{source_path.name}» no es un archivo regular.")
+        if source_path.stat().st_size > _MAX_IMPORT_BYTES:
+            raise CatalogError(f"«{source_path.name}» excede 30 MB.")
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         raw_dir = self.root / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
         with (self.root / ".sync.lock").open("a+b") as lock:
             _lock_exclusive(lock)
+            registry = self._load_registry()
             fd, tmp_name = tempfile.mkstemp(prefix=".importacion-", suffix=".pdf", dir=raw_dir)
             tmp = Path(tmp_name)
             try:
                 digest = hashlib.sha256()
+                copied = 0
                 with source_path.open("rb") as source, os.fdopen(fd, "wb") as handle:
                     while block := source.read(65_536):
+                        copied += len(block)
+                        if copied > _MAX_IMPORT_BYTES:
+                            raise CatalogError(f"«{source_path.name}» excede 30 MB.")
                         digest.update(block)
                         handle.write(block)
                     handle.flush()
@@ -356,7 +388,42 @@ class Catalog:
                     pages = inspect_pdf(tmp)
                 except DownloadError as exc:
                     raise CatalogError(f"El archivo no es un PDF válido: {exc}") from exc
+                identification = identify(tmp, expected_period)
+                identification = Identification(
+                    identification.report_id,
+                    identification.evidence,
+                    identification.usual_month,
+                )
+                report_id = identification.report_id
+                report = lookup(report_id) if lookup is not None else None
+                if lookup is not None and report is None:
+                    raise ImportFileError(
+                        f"Crossref no registra un Informe de Política Monetaria para "
+                        f"{report_id[4:]}; probablemente «{source_path.name}» no es el informe "
+                        "principal de ese periodo."
+                    )
+                if report is not None and report.report_id != report_id:
+                    raise CatalogError("Los metadatos verificados corresponden a otro periodo.")
+                if lookup is None and not identification.usual_month:
+                    raise ImportFileError(
+                        f"El periodo {report_id[4:]} no es un mes habitual del informe (enero, "
+                        "abril, julio u octubre); sin verificarlo en Crossref no se importa."
+                    )
                 sha256 = digest.hexdigest()
+                entries = registry.setdefault(report_id, [])
+                previous = _latest_import(entries)
+                if previous is not None and previous["sha256"] != sha256 and not replace:
+                    raise CatalogError(
+                        f"Ya hay otro PDF importado para {report_id[4:]} "
+                        f"(«{previous['source_name']}», {previous['pages']} páginas); use "
+                        "--reemplazar si quiere sustituirlo."
+                    )
+                if (
+                    previous is not None
+                    and previous["sha256"] == sha256
+                    and (previous["metadata_verified"] or report is None)
+                ):
+                    return previous  # el mismo PDF ya importado: no se degrada su verificación
                 target = raw_dir / f"{report_id}-{sha256}.pdf"
                 os.replace(tmp, target)
                 _sync_directory(raw_dir)
@@ -382,10 +449,7 @@ class Catalog:
                 "metadata_verified": report is not None,
                 "report": metadata,
             }
-            registry = self._load_registry()
-            entries = registry.setdefault(report_id, [])
-            entries[:] = [e for e in entries if e.get("sha256") != sha256 or not _is_import(e)]
-            entries.append(entry)
+            entries[:] = [e for e in entries if not _is_import(e)] + [entry]
             self._save_registry(registry)
             return entry
 
@@ -400,14 +464,19 @@ class Catalog:
                 imported = _latest_import(registry[report_id])
                 if imported is not None:
                     report = imported["report"]
-                    assert isinstance(report, dict)
+                    if not isinstance(report, dict):
+                        raise CatalogError("El registro local de descargas está dañado.")
                     records.append(self._import_record(imported, report))
             if not records:
                 raise CatalogError("No hay PDF importados para activar.")
             return self._publish({"mode": "local_import"}, records, self.clock() + self.max_seconds)
 
     def _import_record(
-        self, entry: dict[str, object], metadata: dict[str, object]
+        self,
+        entry: dict[str, object],
+        metadata: dict[str, object],
+        *,
+        metadata_verified: bool | None = None,
     ) -> dict[str, object]:
         self._verify_local(
             self.root / str(entry["path"]), str(entry["sha256"]), int(str(entry["bytes"]))
@@ -420,12 +489,14 @@ class Catalog:
                 "source_name": entry["source_name"],
                 "imported_at": entry["verified_at"],
                 "identified_by": entry["identified_by"],
-                "metadata_verified": entry["metadata_verified"],
+                "metadata_verified": (
+                    entry["metadata_verified"] if metadata_verified is None else metadata_verified
+                ),
                 "verified_against_source": False,
             },
         }
 
-    def plan(self, max_reports: int = 12) -> dict[str, object]:
+    def plan(self, max_reports: int = 12, *, use_imports: bool = False) -> dict[str, object]:
         """Describe qué haría ``sync`` sin descargar ni escribir nada (``--dry-run``)."""
         reports = self.source.discover(max_reports)
         self._validate_window(reports, max_reports)
@@ -442,8 +513,11 @@ class Catalog:
             previous = self._reusable(entries, report.download_url, fingerprint, raw_dir)
             if previous is not None:
                 status = "sin_cambios" if self._is_fresh(previous) else "revalidar"
+            elif use_imports and _latest_import(entries) is not None:
+                status = "importado_si_falla"
             else:
-                status = "metadatos_o_archivo_cambiados" if entries else "nuevo"
+                downloads = [e for e in entries if not _is_import(e)]
+                status = "metadatos_o_archivo_cambiados" if downloads else "nuevo"
             rows.append({"report_id": report.report_id, "title": report.title, "status": status})
         window = {report.report_id for report in reports}
         leaving = []

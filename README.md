@@ -37,7 +37,7 @@ uv run --frozen ruff check .
 uv run --frozen banrep-rag importar ~/Descargas/informe-politica-monetaria-*.pdf --activar
 ```
 
-El periodo se identifica con el título interno del PDF y su portada, y los metadatos se verifican en Crossref (`--sin-red` lo omite). Un catálogo importado se marca como tal: **no** equivale a «los últimos 12 informes». Con `sincronizar --usar-importados`, un PDF importado solo sustituye a una descarga que falló. Detalles en la [ADR 0005](docs/decisiones/0005-importacion-local.md).
+El periodo se identifica con dos evidencias (portada con la serie junto al periodo, y título interno o ISSN de la serie), se rechazan presentaciones, anexos y otros documentos, y los metadatos se verifican en Crossref (`--sin-red` lo omite). Para sustituir un PDF ya importado del mismo periodo se usa `--reemplazar`. Un catálogo importado se marca como tal: **no** equivale a «los últimos 12 informes». Con `sincronizar --usar-importados`, un PDF importado solo sustituye a una descarga que falló. Detalles en la [ADR 0005](docs/decisiones/0005-importacion-local.md).
 
 El diagnóstico de investigación, incluido el bloqueo de las consultas paginadas a la fuente, está en [docs/arquitectura/diagnostico_inicial.md](docs/arquitectura/diagnostico_inicial.md). Las entregas pendientes se describen en los issues. No se exige ningún proveedor comercial para instalar la base.
 

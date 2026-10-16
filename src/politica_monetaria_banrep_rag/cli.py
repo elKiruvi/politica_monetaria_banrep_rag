@@ -11,7 +11,7 @@ from politica_monetaria_banrep_rag import diagnostics
 from politica_monetaria_banrep_rag.catalog import Catalog, CatalogError
 from politica_monetaria_banrep_rag.crossref import CrossrefReportSource
 from politica_monetaria_banrep_rag.download import DownloadError, PdfDownloader
-from politica_monetaria_banrep_rag.importer import ImportFileError, identify
+from politica_monetaria_banrep_rag.importer import ImportFileError
 from politica_monetaria_banrep_rag.source import BanrepSource, ReportSource, SourceError
 
 SOURCES = ("crossref", "historico")
@@ -33,6 +33,7 @@ _PLAN_LABELS = {
     "sin_cambios": "sin cambios, no se descargará",
     "revalidar": "verificación vencida, se volverá a descargar",
     "metadatos_o_archivo_cambiados": "metadatos o archivo local cambiados, se descargará",
+    "importado_si_falla": "se intentará descargar; si falla, se usará el PDF importado",
 }
 
 
@@ -90,20 +91,32 @@ def _import(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                 )
                 stack.callback(lookup.client.close)
             for path in args.archivos:
-                identification = identify(path, args.periodo)
-                report = lookup.find(identification.report_id) if lookup is not None else None
-                if lookup is not None and report is None:
-                    raise ImportFileError(
-                        f"Crossref no registra el informe {identification.report_id[4:]}; "
-                        "use --sin-red para importarlo sin metadatos verificados."
-                    )
-                catalog.import_pdf(path, identification, report)
-                origin = "metadatos de Crossref" if report else "metadatos sin verificar"
+                entry = catalog.import_pdf(
+                    path,
+                    expected_period=args.periodo,
+                    lookup=lookup.find if lookup is not None else None,
+                    replace=args.reemplazar,
+                )
+                origin = (
+                    "metadatos de Crossref"
+                    if entry["metadata_verified"]
+                    else ("metadatos sin verificar")
+                )
+                evidence = ", ".join(str(e) for e in entry["identified_by"])  # type: ignore[attr-defined]
                 print(
-                    f"Importado {identification.report_id} desde «{path.name}» "
-                    f"({', '.join(identification.evidence)}; {origin})."
+                    f"Importado {str(entry['path'])[4:15]} desde «{path.name}» "
+                    f"({evidence}; {origin})."
                 )
             if args.activar:
+                active = catalog.current()
+                selection = active[1].get("selection") if active is not None else None
+                mode = selection.get("mode") if isinstance(selection, dict) else "latest_n"
+                if active is not None and mode != "local_import":
+                    print(
+                        "Aviso: se reemplaza el catálogo activo de los últimos informes por uno "
+                        "de importación local; el anterior se conserva en snapshots/.",
+                        file=sys.stderr,
+                    )
                 print(f"Catálogo activo (importación local): {catalog.activate_imports()}")
     except OSError as exc:
         parser.exit(1, f"Error de importación: {_local_failure(exc)}\n")
@@ -117,6 +130,8 @@ def _status(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         catalog = _offline_catalog(root)
         with catalog.source.client, catalog.downloader.client:
             active = catalog.current()
+    except OSError as exc:
+        parser.exit(1, f"Error: {_local_failure(exc)}\n")
     except CatalogError as exc:
         parser.exit(1, f"Error: {exc}\n")
     if active is None:
@@ -137,8 +152,14 @@ def _status(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     print(f"Catálogo activo {snapshot_id[:12]} — {mode}")
     for record in records:
         report, pdf = record["report"], record["pdf"]
-        method = (record.get("acquisition") or {"method": "download"})["method"]
-        origin = "importado" if method == "local_import" else "descargado"
+        acquisition = record.get("acquisition") or {"method": "download"}
+        origin = "descargado"
+        if acquisition["method"] == "local_import":
+            origin = (
+                "importado"
+                if acquisition.get("metadata_verified")
+                else ("importado, metadatos sin verificar")
+            )
         print(
             f"  {report['reference_period']}  {report['title']} — {pdf['pages']} págs., "
             f"{origin}, sha256 {str(pdf['sha256'])[:12]}"
@@ -204,6 +225,11 @@ def main() -> None:
     importer_cmd.add_argument(
         "--sin-red", action="store_true", help="No consulta Crossref (metadatos sin verificar)"
     )
+    importer_cmd.add_argument(
+        "--reemplazar",
+        action="store_true",
+        help="Sustituye un PDF importado antes para el mismo periodo",
+    )
     status_cmd = subcommands.add_parser("estado", help="Muestra el catálogo local activo")
     status_cmd.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
     status_cmd.add_argument("--json", action="store_true", help="Emite el snapshot en JSON")
@@ -256,7 +282,7 @@ def main() -> None:
                         download_pause=args.pausa,
                     )
                     if args.dry_run:
-                        _print_plan(catalog.plan(max_reports))
+                        _print_plan(catalog.plan(max_reports, use_imports=args.usar_importados))
                         return
                     snapshot_id = catalog.sync(max_reports, use_imports=args.usar_importados)
             except OSError as exc:

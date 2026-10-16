@@ -180,6 +180,7 @@ class CrossrefReportSource:
         self.contact_email = contact_email
         self.today = today
         self.pause = pause
+        self._years: dict[int, list[object]] = {}  # caché de listados para find()
 
     def _fetch_year(self, year: int) -> list[object]:
         params = {
@@ -233,10 +234,12 @@ class CrossrefReportSource:
         current_year = today.year
         year = int(report_id[4:8])
         matches = []
-        for position, candidate_year in enumerate(y for y in (year, year + 1) if y <= current_year):
-            if position:
-                self.pause(0.5)
-            for item in self._fetch_year(candidate_year):
+        for candidate_year in (y for y in (year, year + 1) if y <= current_year):
+            if candidate_year not in self._years:
+                if self._years:
+                    self.pause(0.5)
+                self._years[candidate_year] = self._fetch_year(candidate_year)
+            for item in self._years[candidate_year]:
                 candidate = _parse_item(item, checked_at, today)
                 if candidate is not None and candidate.record.report_id == report_id:
                     matches.append(candidate.record)
