@@ -180,6 +180,7 @@ class CrossrefReportSource:
         self.contact_email = contact_email
         self.today = today
         self.pause = pause
+        self._years: dict[int, list[object]] = {}  # caché de listados para find()
 
     def _fetch_year(self, year: int) -> list[object]:
         params = {
@@ -223,6 +224,30 @@ class CrossrefReportSource:
             # Con más de mil reportes por año habría que paginar; no se acepta un año parcial.
             raise SourceError(f"Crossref no devolvió completo el año {year}; no se continúa.")
         return items
+
+    def find(self, report_id: str) -> ReportRecord | None:
+        """Metadatos verificados de un periodo concreto (publicado ese año o el siguiente)."""
+        if not re.fullmatch(r"ipm-\d{4}-(0[1-9]|1[0-2])", report_id):
+            raise ValueError("El identificador del informe no es válido.")
+        checked_at = datetime.now(UTC).isoformat()
+        today = self.today or datetime.now(UTC).date()
+        current_year = today.year
+        year = int(report_id[4:8])
+        matches = []
+        for candidate_year in (y for y in (year, year + 1) if y <= current_year):
+            if candidate_year not in self._years:
+                if self._years:
+                    self.pause(0.5)
+                self._years[candidate_year] = self._fetch_year(candidate_year)
+            for item in self._years[candidate_year]:
+                candidate = _parse_item(item, checked_at, today)
+                if candidate is not None and candidate.record.report_id == report_id:
+                    matches.append(candidate.record)
+        if len(matches) > 1:
+            raise SourceError(
+                f"Crossref registra más de un informe principal para {report_id[4:]}."
+            )
+        return matches[0] if matches else None
 
     def discover(self, max_reports: int = 12) -> list[ReportRecord]:
         if (
