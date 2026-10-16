@@ -1,13 +1,16 @@
 import gzip
 import hashlib
 import io
+import os
 from dataclasses import replace
+from datetime import UTC, datetime, timedelta
+from email.utils import format_datetime
 
 import httpx
 import pytest
 from pypdf import PdfWriter
 
-from politica_monetaria_banrep_rag.download import DownloadError, PdfDownloader
+from politica_monetaria_banrep_rag.download import DownloadError, PdfDownloader, _retry_after
 from politica_monetaria_banrep_rag.source import ReportRecord
 
 
@@ -158,8 +161,8 @@ def test_interrupted_stream_removes_partial_file(tmp_path, report):
     with httpx.Client(
         transport=httpx.MockTransport(lambda _: httpx.Response(200, stream=BrokenStream()))
     ) as client:
-        with pytest.raises(DownloadError, match="leer el PDF"):
-            PdfDownloader(client).download(report, tmp_path)
+        with pytest.raises(DownloadError, match="reintentos"):
+            PdfDownloader(client, attempts=1).download(report, tmp_path)
     assert list(tmp_path.iterdir()) == []
 
 
@@ -238,3 +241,229 @@ def test_total_deadline_aborts_stream_and_cleans_file(tmp_path, report, pdf_byte
         with pytest.raises(DownloadError, match="tiempo máximo"):
             PdfDownloader(client, max_seconds=2).download(report, tmp_path)
     assert list(tmp_path.iterdir()) == []
+
+
+def test_repeated_bytes_keep_mtime_and_correction_keeps_old_pdf(tmp_path, report, pdf_bytes):
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    writer.add_metadata({"/Title": "Corrección sintética"})
+    output = io.BytesIO()
+    writer.write(output)
+    newer = output.getvalue()
+    delivered = [pdf_bytes, pdf_bytes, newer]
+
+    def respond(_):
+        return httpx.Response(200, stream=httpx.ByteStream(delivered.pop(0)))
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        downloader = PdfDownloader(client)
+        first = downloader.download(report, tmp_path)
+        os.utime(first.path, (946684800, 946684800))
+        initial_mtime = first.path.stat().st_mtime_ns
+        assert downloader.download(report, tmp_path).path == first.path
+        assert first.path.stat().st_mtime_ns == initial_mtime
+        updated = downloader.download(report, tmp_path)
+    assert updated.sha256 != first.sha256
+    assert first.path.read_bytes() == pdf_bytes
+    assert updated.path.read_bytes() == newer
+    assert len(list(tmp_path.glob("*.pdf"))) == 2
+
+
+@pytest.mark.parametrize("status", [408, 429, 503])
+def test_transient_status_retries_with_retry_after(
+    tmp_path, report, pdf_bytes, monkeypatch, status
+):
+    calls = 0
+    delays = []
+    monkeypatch.setattr("politica_monetaria_banrep_rag.download.time.sleep", delays.append)
+
+    def respond(_):
+        nonlocal calls
+        calls += 1
+        if calls == 1:
+            return httpx.Response(status, headers={"retry-after": "0"})
+        return httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        assert PdfDownloader(client).download(report, tmp_path).pages_count == 1
+    assert calls == 2
+    assert delays == [0]
+
+
+def test_permanent_http_error_does_not_retry(tmp_path, report):
+    calls = 0
+
+    def respond(_):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(404)
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(DownloadError, match="HTTP 404"):
+            PdfDownloader(client).download(report, tmp_path)
+    assert calls == 1
+
+
+def test_retries_are_bounded_and_do_not_leave_partial_files(tmp_path, report, monkeypatch):
+    calls = 0
+    monkeypatch.setattr("politica_monetaria_banrep_rag.download.time.sleep", lambda _: None)
+
+    def respond(_):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(503, headers={"retry-after": "0"})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(DownloadError, match="reintentos"):
+            PdfDownloader(client, attempts=3).download(report, tmp_path)
+    assert calls == 3
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_existing_symlink_is_rejected(tmp_path, report, pdf_bytes):
+    digest = hashlib.sha256(pdf_bytes).hexdigest()
+    outside = tmp_path.parent / "fuera.pdf"
+    outside.write_bytes(pdf_bytes)
+    (tmp_path / f"{report.report_id}-{digest}.pdf").symlink_to(outside)
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        )
+    ) as client:
+        with pytest.raises(DownloadError, match="destino"):
+            PdfDownloader(client).download(report, tmp_path)
+    assert outside.read_bytes() == pdf_bytes
+
+
+def test_retry_after_parses_http_date_and_ignores_invalid_values():
+    later = format_datetime(datetime.now(UTC) + timedelta(seconds=30), usegmt=True)
+    assert 0 < _retry_after(later) <= 30
+    assert _retry_after("120") == 120.0
+    assert _retry_after("NaN") is None
+    assert _retry_after("fecha imposible") is None
+
+
+def test_invalid_download_limits_are_rejected():
+    with pytest.raises(ValueError, match="límites"):
+        PdfDownloader(max_seconds=float("nan"))
+    with pytest.raises(ValueError, match="límites"):
+        PdfDownloader(attempts=6)
+    with pytest.raises(ValueError, match="límites"):
+        PdfDownloader(attempts=1.5)
+
+
+def test_retry_after_longer_than_deadline_stops_without_early_retry(tmp_path, report):
+    calls = 0
+
+    def respond(_):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(429, headers={"retry-after": "120"})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(DownloadError, match="tiempo máximo"):
+            PdfDownloader(client, max_seconds=30).download(report, tmp_path)
+    assert calls == 1
+
+
+def test_symlink_inserted_before_open_is_rejected(tmp_path, report, pdf_bytes, monkeypatch):
+    digest = hashlib.sha256(pdf_bytes).hexdigest()
+    target = tmp_path / f"{report.report_id}-{digest}.pdf"
+    target.write_bytes(pdf_bytes)
+    outside = tmp_path.parent / "documento-externo.pdf"
+    outside.write_bytes(pdf_bytes)
+    original_open = os.open
+
+    def replaced_open(path, flags, *args, **kwargs):
+        if str(path) == str(target):
+            target.unlink()
+            target.symlink_to(outside)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr("politica_monetaria_banrep_rag.download.os.open", replaced_open)
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        )
+    ) as client:
+        with pytest.raises(DownloadError, match="seguridad"):
+            PdfDownloader(client).download(report, tmp_path)
+    assert outside.read_bytes() == pdf_bytes
+
+
+def test_without_no_follow_replaces_instead_of_reading_existing_file(
+    tmp_path, report, pdf_bytes, monkeypatch
+):
+    target = tmp_path / f"{report.report_id}-{hashlib.sha256(pdf_bytes).hexdigest()}.pdf"
+    target.write_bytes(b"x" * len(pdf_bytes))
+    monkeypatch.delattr("politica_monetaria_banrep_rag.download.os.O_NOFOLLOW", raising=False)
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        )
+    ) as client:
+        assert PdfDownloader(client).download(report, tmp_path).path == target
+    assert target.read_bytes() == pdf_bytes
+
+
+def test_injected_client_without_timeout_receives_bounded_request_timeout(
+    tmp_path, report, pdf_bytes
+):
+    observed = []
+
+    def respond(request):
+        observed.append(request.extensions["timeout"])
+        return httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+
+    with httpx.Client(transport=httpx.MockTransport(respond), timeout=None) as client:
+        assert PdfDownloader(client, max_seconds=3).download(report, tmp_path).pages_count == 1
+    assert len(observed) == 1
+    assert 0 < observed[0]["read"] <= 2
+    assert 0 < observed[0]["connect"] <= 3
+
+
+def test_fifo_inserted_before_open_cannot_block_download(tmp_path, report, pdf_bytes, monkeypatch):
+    if not hasattr(os, "mkfifo") or not hasattr(os, "O_NONBLOCK"):
+        pytest.skip("La plataforma no proporciona FIFO no bloqueante")
+    target = tmp_path / f"{report.report_id}-{hashlib.sha256(pdf_bytes).hexdigest()}.pdf"
+    target.write_bytes(pdf_bytes)
+    original_open = os.open
+
+    def insert_fifo(path, flags, *args, **kwargs):
+        if str(path) == str(target):
+            target.unlink()
+            os.mkfifo(target)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr("politica_monetaria_banrep_rag.download.os.open", insert_fifo)
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        )
+    ) as client:
+        with pytest.raises(DownloadError, match="regular"):
+            PdfDownloader(client, max_seconds=1).download(report, tmp_path)
+
+
+def test_hashing_existing_file_cannot_succeed_after_deadline(
+    tmp_path, report, pdf_bytes, monkeypatch
+):
+    target = tmp_path / f"{report.report_id}-{hashlib.sha256(pdf_bytes).hexdigest()}.pdf"
+    target.write_bytes(pdf_bytes)
+    clock = [0.0]
+    monkeypatch.setattr("politica_monetaria_banrep_rag.download.time.monotonic", lambda: clock[0])
+    original_digest = hashlib.file_digest
+
+    def slow_digest(*args, **kwargs):
+        clock[0] = 2.0
+        return original_digest(*args, **kwargs)
+
+    monkeypatch.setattr("politica_monetaria_banrep_rag.download.hashlib.file_digest", slow_digest)
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        )
+    ) as client:
+        with pytest.raises(DownloadError, match="tiempo máximo"):
+            PdfDownloader(client, max_seconds=1).download(report, tmp_path)
+    assert target.read_bytes() == pdf_bytes

@@ -2,12 +2,16 @@
 
 import hashlib
 import io
+import math
 import os
+import random
 import re
+import stat
 import tempfile
 import time
 import zlib
 from dataclasses import dataclass
+from email.utils import parsedate_to_datetime
 from pathlib import Path
 from urllib.parse import urljoin
 
@@ -20,6 +24,26 @@ from politica_monetaria_banrep_rag.source import ReportRecord, SourceError, _off
 
 class DownloadError(Exception):
     """El documento remoto no pudo validarse; no debe activarse en el catálogo."""
+
+
+class _TransientDownloadError(Exception):
+    def __init__(self, retry_after: float | None = None) -> None:
+        self.retry_after = retry_after
+
+
+def _retry_after(value: str | None) -> float | None:
+    if not value:
+        return None
+    try:
+        seconds = float(value)
+        return max(0.0, seconds) if math.isfinite(seconds) else None
+    except ValueError:
+        try:
+            date = parsedate_to_datetime(value)
+            seconds = date.timestamp() - time.time()
+            return max(0.0, seconds) if math.isfinite(seconds) else None
+        except (TypeError, ValueError, OverflowError):
+            return None
 
 
 @dataclass(frozen=True)
@@ -42,8 +66,15 @@ class PdfDownloader:
         max_bytes: int = 30_000_000,
         max_pages: int = 400,
         max_seconds: float = 180,
+        attempts: int = 3,
     ) -> None:
-        if min(max_bytes, max_pages, max_seconds) < 1:
+        if (
+            not isinstance(attempts, int)
+            or isinstance(attempts, bool)
+            or min(max_bytes, max_pages, max_seconds, attempts) < 1
+            or not math.isfinite(max_seconds)
+            or attempts > 5
+        ):
             raise ValueError("Los límites de descarga deben ser positivos.")
         if client is not None:
             self._reject_client_credentials(client)
@@ -58,6 +89,7 @@ class PdfDownloader:
         self.max_bytes = max_bytes
         self.max_pages = max_pages
         self.max_seconds = max_seconds
+        self.attempts = attempts
 
     @staticmethod
     def _reject_client_credentials(client: httpx.Client) -> None:
@@ -79,7 +111,20 @@ class PdfDownloader:
         except SourceError as exc:
             raise DownloadError("La URL de descarga no es oficial o válida.") from exc
         deadline = time.monotonic() + self.max_seconds
-        return self._download_once(report.report_id, url, raw_dir, deadline)
+        for attempt in range(self.attempts):
+            self._check_deadline(deadline)
+            try:
+                return self._download_once(report.report_id, url, raw_dir, deadline)
+            except _TransientDownloadError as exc:
+                if attempt == self.attempts - 1:
+                    raise DownloadError("La descarga falló después de los reintentos.") from exc
+                delay = exc.retry_after
+                if delay is None:
+                    delay = min(2**attempt + random.random(), 10.0)
+                if time.monotonic() + delay >= deadline:
+                    raise DownloadError("La descarga superó el tiempo máximo.") from exc
+                time.sleep(delay)
+        raise DownloadError("No se completó la descarga.")
 
     @staticmethod
     def _check_deadline(deadline: float) -> None:
@@ -92,8 +137,14 @@ class PdfDownloader:
         for _ in range(6):
             self._check_deadline(deadline)
             self._reject_client_credentials(self.client)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise DownloadError("La descarga superó el tiempo máximo.")
+            timeout = httpx.Timeout(min(remaining, 2.0), connect=min(remaining, 5.0))
             try:
-                with self.client.stream("GET", url, follow_redirects=False) as response:
+                with self.client.stream(
+                    "GET", url, follow_redirects=False, timeout=timeout
+                ) as response:
                     # La fuente pública no requiere ni conserva cookies entre saltos.
                     self.client.cookies.clear()
                     if response.status_code in {301, 302, 303, 307, 308}:
@@ -107,11 +158,15 @@ class PdfDownloader:
                                 "La redirección apunta a un destino no autorizado."
                             ) from exc
                         continue
+                    if response.status_code in {408, 429} or response.status_code >= 500:
+                        raise _TransientDownloadError(
+                            _retry_after(response.headers.get("retry-after"))
+                        )
                     if response.status_code != 200:
                         raise DownloadError(f"La fuente devolvió HTTP {response.status_code}.")
                     return self._save(response, report_id, raw_dir, url, deadline)
             except httpx.HTTPError as exc:
-                raise DownloadError("No se pudo leer el PDF remoto.") from exc
+                raise _TransientDownloadError() from exc
         raise DownloadError("Se superó el número de redirecciones autorizadas.")
 
     def _save(
@@ -182,9 +237,49 @@ class PdfDownloader:
                 raise DownloadError("El número de páginas excede los límites permitidos.")
             self._check_deadline(deadline)
             target = raw_dir / f"{report_id}-{digest.hexdigest()}.pdf"
+            identical = self._existing_file_is_identical(target, digest.hexdigest(), total)
+            self._check_deadline(deadline)
+            if identical:
+                return DownloadResult(
+                    target, digest.hexdigest(), total, pages, url, mime or "application/pdf"
+                )
             os.replace(tmp, target)
             return DownloadResult(
                 target, digest.hexdigest(), total, pages, url, mime or "application/pdf"
             )
         finally:
             tmp.unlink(missing_ok=True)
+
+    @staticmethod
+    def _existing_file_is_identical(target: Path, sha256: str, size: int) -> bool:
+        try:
+            initial = target.lstat()
+        except FileNotFoundError:
+            return False
+        if not stat.S_ISREG(initial.st_mode):
+            raise DownloadError("El destino del PDF no es un archivo seguro.")
+        no_follow = getattr(os, "O_NOFOLLOW", None)
+        nonblocking = getattr(os, "O_NONBLOCK", None)
+        if no_follow is None or nonblocking is None:
+            # Sin apertura segura, reemplazar el enlace en vez de leer un destino ajeno.
+            return False
+        try:
+            fd = os.open(target, os.O_RDONLY | no_follow | nonblocking)
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise DownloadError("El destino del PDF no se pudo abrir con seguridad.") from exc
+        with os.fdopen(fd, "rb") as existing:
+            original = os.fstat(existing.fileno())
+            if not stat.S_ISREG(original.st_mode):
+                raise DownloadError("El destino del PDF no es un archivo regular.")
+            if original.st_size != size:
+                return False
+            same_hash = hashlib.file_digest(existing, "sha256").hexdigest() == sha256
+            try:
+                current = target.stat(follow_symlinks=False)
+            except FileNotFoundError as exc:
+                raise DownloadError("El destino del PDF cambió durante la validación.") from exc
+            if (original.st_dev, original.st_ino) != (current.st_dev, current.st_ino):
+                raise DownloadError("El destino del PDF cambió durante la validación.")
+            return same_hash
