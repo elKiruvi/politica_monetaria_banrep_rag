@@ -13,7 +13,7 @@ import zlib
 from dataclasses import dataclass
 from email.utils import parsedate_to_datetime
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 import httpx
 from pypdf import PdfReader
@@ -158,9 +158,11 @@ class PdfDownloader:
                             raise DownloadError("Falta el destino de una redirección.")
                         target = urljoin(url, location)
                         if is_challenge_url(target):
+                            origin = urlsplit(url)
                             raise DownloadBlockedError(
-                                "Banrep pidió una verificación antibot (Radware) y no se elude; "
-                                "importe un PDF obtenido legítimamente o reintente más tarde."
+                                "Banrep pidió una verificación antibot (Radware) al solicitar "
+                                f"{origin.hostname}{origin.path} y no se elude; importe un PDF "
+                                "obtenido legítimamente o reintente más tarde."
                             )
                         try:
                             url = redirect_target(url, location)

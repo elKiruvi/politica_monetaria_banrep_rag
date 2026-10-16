@@ -7,6 +7,7 @@ import sys
 from contextlib import ExitStack
 from pathlib import Path
 
+from politica_monetaria_banrep_rag import diagnostics
 from politica_monetaria_banrep_rag.catalog import Catalog, CatalogError
 from politica_monetaria_banrep_rag.crossref import CrossrefReportSource
 from politica_monetaria_banrep_rag.download import DownloadError, PdfDownloader
@@ -32,6 +33,15 @@ def main() -> None:
     )
     subcommands = parser.add_subparsers(dest="command", required=True)
     subcommands.add_parser("diagnostico", help="Muestra las capacidades disponibles")
+    sources_check = subcommands.add_parser(
+        "diagnostico-fuentes", help="Prueba el acceso a Crossref, al histórico y al repositorio"
+    )
+    sources_check.add_argument("--json", action="store_true", help="Emite el informe en JSON")
+    sources_check.add_argument(
+        "--descargar-uno",
+        action="store_true",
+        help="Descarga y verifica el PDF más reciente en un directorio temporal",
+    )
     discover = subcommands.add_parser(
         "descubrir", help="Verifica los informes principales oficiales"
     )
@@ -47,6 +57,12 @@ def main() -> None:
     args = parser.parse_args()
     if args.command == "diagnostico":
         print("La sincronización del catálogo está disponible; las consultas aún no.")
+    elif args.command == "diagnostico-fuentes":
+        access = diagnostics.run(download_one=args.descargar_uno)
+        if args.json:
+            print(json.dumps(access, ensure_ascii=False, indent=2))
+        else:
+            print(diagnostics.render(access))
     elif args.command in {"descubrir", "sincronizar"}:
         value = (
             args.max_reports
