@@ -1,0 +1,9 @@
+# ADR 0002 — Validación de PDF con licencia permisiva
+
+**Decisión:** validar firma, apertura y cantidad de páginas con `pypdf` antes de incorporar un archivo descargado. `pypdf 6.20.1` declara licencia BSD-3-Clause en los metadatos del paquete, compatible con el código MIT de este repositorio.
+
+**Evidencia:** los enlaces del histórico son DOI que redirigen al repositorio Banrep; a veces la respuesta final puede ser HTML de un control de acceso. Comprobar extensión o cabeceras por sí solo no basta. La documentación oficial de PyMuPDF indica AGPL v3 o licencia comercial; incorporarlo como dependencia obligatoria sin evaluar la distribución impondría obligaciones distintas. Este ADR solo resuelve la validación de descarga, **no** la extracción de tablas de F4.
+
+**Ventajas:** instalación ligera y legalmente clara para esta etapa; las respuestas HTML y PDF truncados no se almacenan. **Riesgos:** `pypdf` estricto puede rechazar PDF reales con defectos menores; sin prueba real no se relajará el validador ni se declarará compatibilidad con los doce informes. La lectura de páginas no sustituye una revisión posterior de contenido y tablas. **Alternativa:** evaluar PyMuPDF en F4 con licencias y casos reales, o `pdfplumber`/`pdfminer.six` con precisión medible.
+
+**Comprobación acotada:** `PdfReader(..., strict=True)` abrió localmente los cinco PDF del repositorio anterior sin copiarlos; sus números de páginas fueron 56, 61, 54, 54 y 51 (orden alfabético). Esto verifica el parser con esas copias, **no** sus derechos de redistribución ni la descarga actual. Una prueba real de `https://doi.org/rh7c` con el descargador nuevo terminó en redirección hacia un host no autorizado; se rechazó y no se persistió el PDF. No hay evidencia de ingesta de doce informes.
