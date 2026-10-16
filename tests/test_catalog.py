@@ -415,3 +415,120 @@ def test_plan_on_empty_directory_does_not_create_it(tmp_path):
     with client:
         assert catalog.plan(1)["window"][0]["status"] == "nuevo"
     assert not catalog.root.exists()
+
+
+def test_future_verification_time_is_never_fresh(tmp_path, pdf_bytes):
+    calls, clock = [], Clock()
+    catalog, client = make_catalog(
+        tmp_path, Source([report(7)]), counting(pdf_bytes, calls), wall_clock=clock
+    )
+    with client:
+        catalog.sync(1)
+        clock.now -= 365 * 86400  # el reloj estaba adelantado durante la descarga
+        assert catalog.plan(1)["window"][0]["status"] == "revalidar"
+        catalog.sync(1)
+    assert len(calls) == 2
+
+
+@pytest.mark.parametrize("constant", ["Infinity", "NaN", "-Infinity"])
+def test_registry_with_non_finite_numbers_is_rejected(tmp_path, pdf_bytes, constant):
+    catalog, client = make_catalog(tmp_path, Source([report(7)]), counting(pdf_bytes, []))
+    with client:
+        catalog.sync(1)
+        path = catalog.root / "acquisitions.json"
+        data = json.loads(path.read_text())
+        data["entries"]["ipm-2026-07"][0]["verified_ts"] = "__X__"
+        path.write_text(json.dumps(data).replace('"__X__"', constant))
+        with pytest.raises(CatalogError, match="registro local"):
+            catalog.sync(1)
+
+
+@pytest.mark.parametrize(
+    "field,value",
+    [("sha256", "0" * 64), ("pages", -5), ("bytes", "18"), ("verified_at", "\x1b[31mROJO")],
+)
+def test_registry_fields_are_validated(tmp_path, pdf_bytes, field, value):
+    catalog, client = make_catalog(tmp_path, Source([report(7)]), counting(pdf_bytes, []))
+    with client:
+        catalog.sync(1)
+        path = catalog.root / "acquisitions.json"
+        data = json.loads(path.read_text())
+        data["entries"]["ipm-2026-07"][0][field] = value
+        path.write_text(json.dumps(data))
+        with pytest.raises(CatalogError, match="registro local"):
+            catalog.sync(1)
+
+
+@pytest.mark.parametrize("status", [404, 200])
+def test_permanent_revalidation_failure_is_not_hidden(tmp_path, pdf_bytes, status):
+    clock = Clock()
+    state = {"fail": False}
+
+    def respond(request):
+        if not state["fail"]:
+            return httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        if status == 404:
+            return httpx.Response(404)
+        return httpx.Response(200, headers={"content-type": "text/html"}, text="<html></html>")
+
+    catalog, client = make_catalog(tmp_path, Source([report(7)]), respond, wall_clock=clock)
+    with client:
+        first = catalog.sync(1)
+        clock.now += 31 * 86400
+        state["fail"] = True
+        with pytest.raises(DownloadError):
+            catalog.sync(1)
+    assert catalog.current()[0] == first
+
+
+def test_verified_downloads_survive_a_later_failure(tmp_path, pdf_bytes):
+    calls, blocked = [], {"on": True}
+
+    def respond(request):
+        calls.append(str(request.url))
+        if blocked["on"] and str(request.url).endswith("rh1"):
+            return httpx.Response(302, headers={"location": "https://validate.perfdrive.com/"})
+        return httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+
+    catalog, client = make_catalog(tmp_path, Source([report(7), report(4), report(1)]), respond)
+    with client:
+        with pytest.raises(DownloadError, match="antibot"):
+            catalog.sync(3)
+        assert catalog.current() is None
+        blocked["on"] = False
+        catalog.sync(3)
+    assert len(calls) == 4  # 07, 04, 01 bloqueado y luego solo 01
+
+
+def test_pause_does_not_consume_the_total_deadline(tmp_path, pdf_bytes):
+    monotonic = [0.0]
+
+    def sleep(seconds):
+        monotonic[0] += seconds
+
+    catalog, client = make_catalog(
+        tmp_path, Source([report(m) for m in (10, 7, 4, 1)]), counting(pdf_bytes, []),
+        download_pause=200, sleep=sleep, clock=lambda: monotonic[0], max_seconds=300,
+    )  # fmt: skip
+    with client:
+        catalog.sync(4)
+    assert monotonic[0] == 600
+
+
+def test_redeposit_or_source_switch_does_not_force_download(tmp_path, pdf_bytes):
+    calls = []
+    source = Source([report(7)])
+    catalog, client = make_catalog(tmp_path, source, counting(pdf_bytes, calls))
+    with client:
+        catalog.sync(1)
+        source.reports = [
+            replace(report(7), metadata_deposited_at="2026-10-20", discovery_source="crossref")
+        ]
+        assert catalog.plan(1)["window"][0]["status"] == "sin_cambios"
+        catalog.sync(1)
+    assert len(calls) == 1
+
+
+def test_pause_limit_is_explained(tmp_path):
+    with pytest.raises(ValueError, match="entre 0 y 600"):
+        Catalog(tmp_path, Source([]), PdfDownloader(), download_pause=601)

@@ -31,6 +31,10 @@ class DownloadBlockedError(DownloadError):
     """La fuente exigió una verificación antibot; el proyecto no la elude."""
 
 
+class DownloadTransientError(DownloadError):
+    """Fallo de red, tiempo agotado o error temporal del servidor tras los reintentos."""
+
+
 class _TransientDownloadError(Exception):
     def __init__(self, retry_after: float | None = None) -> None:
         self.retry_after = retry_after
@@ -122,19 +126,21 @@ class PdfDownloader:
                 return self._download_once(report.report_id, url, raw_dir, deadline)
             except _TransientDownloadError as exc:
                 if attempt == self.attempts - 1:
-                    raise DownloadError("La descarga falló después de los reintentos.") from exc
+                    raise DownloadTransientError(
+                        "La descarga falló después de los reintentos."
+                    ) from exc
                 delay = exc.retry_after
                 if delay is None:
                     delay = min(2**attempt + random.random(), 10.0)
                 if time.monotonic() + delay >= deadline:
-                    raise DownloadError("La descarga superó el tiempo máximo.") from exc
+                    raise DownloadTransientError("La descarga superó el tiempo máximo.") from exc
                 time.sleep(delay)
         raise DownloadError("No se completó la descarga.")
 
     @staticmethod
     def _check_deadline(deadline: float) -> None:
         if time.monotonic() >= deadline:
-            raise DownloadError("La descarga superó el tiempo máximo.")
+            raise DownloadTransientError("La descarga superó el tiempo máximo.")
 
     def _download_once(
         self, report_id: str, url: str, raw_dir: Path, deadline: float
@@ -144,7 +150,7 @@ class PdfDownloader:
             self._reject_client_credentials(self.client)
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                raise DownloadError("La descarga superó el tiempo máximo.")
+                raise DownloadTransientError("La descarga superó el tiempo máximo.")
             timeout = httpx.Timeout(min(remaining, 2.0), connect=min(remaining, 5.0))
             try:
                 with self.client.stream(

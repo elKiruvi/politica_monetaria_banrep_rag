@@ -45,6 +45,13 @@ def _non_negative(value: str) -> float:
     return number
 
 
+def _pause(value: str) -> float:
+    number = _non_negative(value)
+    if number > 600:
+        raise argparse.ArgumentTypeError("debe estar entre 0 y 600 segundos")
+    return number
+
+
 def _print_plan(plan: dict[str, object]) -> None:
     window = plan["window"]
     leaving = plan["leaving"]
@@ -94,7 +101,7 @@ def main() -> None:
     )
     sync.add_argument(
         "--pausa",
-        type=_non_negative,
+        type=_pause,
         default=10.0,
         help="Segundos de espera entre descargas reales (por defecto: 10)",
     )

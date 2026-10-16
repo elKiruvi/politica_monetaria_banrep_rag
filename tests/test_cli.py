@@ -255,3 +255,11 @@ def test_sincronizar_rejects_invalid_pause(capsys, monkeypatch, value):
     with pytest.raises(SystemExit) as error:
         main()
     assert error.value.code == 2
+
+
+def test_sincronizar_rejects_pause_above_limit(capsys, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["banrep-rag", "sincronizar", "--pausa", "601"])
+    with pytest.raises(SystemExit) as error:
+        main()
+    assert error.value.code == 2
+    assert "entre 0 y 600" in capsys.readouterr().err

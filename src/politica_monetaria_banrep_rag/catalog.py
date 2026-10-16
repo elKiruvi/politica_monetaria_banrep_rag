@@ -12,7 +12,11 @@ from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO
 
-from politica_monetaria_banrep_rag.download import DownloadError, PdfDownloader
+from politica_monetaria_banrep_rag.download import (
+    DownloadBlockedError,
+    DownloadTransientError,
+    PdfDownloader,
+)
 from politica_monetaria_banrep_rag.source import (
     ReportRecord,
     ReportSource,
@@ -32,6 +36,39 @@ _REGISTRY_FIELDS = (
 
 class CatalogError(Exception):
     """La ventana o el estado local no permiten activar un snapshot."""
+
+
+_FINGERPRINT_EXCLUDE = ("metadata_deposited_at", "discovery_source")
+_ISO_SECONDS = re.compile(r"\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\+00:00")
+
+
+def _fingerprint(metadata: dict[str, object]) -> str:
+    """Huella de los metadatos que afectan al documento (no de la procedencia de la consulta)."""
+    relevant = {k: v for k, v in metadata.items() if k not in _FINGERPRINT_EXCLUDE}
+    return hashlib.sha256(_json_bytes(relevant)).hexdigest()
+
+
+def _reject_constant(value: str) -> float:
+    raise ValueError(f"Valor numérico no permitido: {value}")
+
+
+def _check_entry(report_id: str, item: dict[str, object]) -> None:
+    """Valida tipos y coherencia de una entrada del registro; ``ValueError`` si no encaja."""
+    match = re.fullmatch(rf"raw/{report_id}-([0-9a-f]{{64}})\.pdf", str(item["path"]))
+    numbers = (item["bytes"], item["pages"], item["verified_ts"])
+    if (
+        not match
+        or match[1] != item["sha256"]
+        or any(isinstance(n, bool) or not isinstance(n, int | float) for n in numbers)
+        or not isinstance(item["bytes"], int)
+        or not isinstance(item["pages"], int)
+        or int(item["bytes"]) < 8
+        or not 1 <= int(item["pages"]) <= 400
+        or not all(isinstance(item[k], str) for k in ("final_url", "mime_type", "download_url"))
+        or not isinstance(item["verified_at"], str)
+        or not _ISO_SECONDS.fullmatch(item["verified_at"])
+    ):
+        raise ValueError("Entrada inválida")
 
 
 def _timestamp(entry: dict[str, object]) -> float:
@@ -104,8 +141,10 @@ class Catalog:
     ):
         if not 0 < max_seconds < float("inf"):
             raise ValueError("El plazo total de sincronización debe ser positivo.")
-        if not 0 <= revalidate_seconds < float("inf") or not 0 <= download_pause <= 600:
-            raise ValueError("La revalidación y la pausa entre descargas deben ser finitas.")
+        if not 0 <= revalidate_seconds < float("inf"):
+            raise ValueError("El plazo de revalidación debe ser un número finito no negativo.")
+        if not 0 <= download_pause <= 600:
+            raise ValueError("La pausa entre descargas debe estar entre 0 y 600 segundos.")
         self.root = root
         self.source = source
         self.downloader = downloader
@@ -170,12 +209,10 @@ class Catalog:
                     )
                 metadata = report.to_dict()
                 metadata.pop("discovered_at")  # No cambiar la revisión solo por una nueva consulta.
-                fingerprint = hashlib.sha256(_json_bytes(metadata)).hexdigest()
+                fingerprint = _fingerprint(metadata)
                 entries = registry.setdefault(report.report_id, [])
                 previous = self._reusable(entries, report.download_url, fingerprint, raw_dir)
-                fresh = previous is not None and (
-                    self.wall_clock() - _timestamp(previous) < self.revalidate_seconds
-                )
+                fresh = previous is not None and self._is_fresh(previous)
                 label = f"{position}/{len(reports)}: {report.report_id}"
                 if fresh:
                     assert previous is not None
@@ -184,11 +221,12 @@ class Catalog:
                 else:
                     if downloaded and self.download_pause:
                         self.sleep(self.download_pause)  # Ritmo respetuoso con la fuente.
+                        deadline += self.download_pause  # La espera no consume el plazo.
                     self.progress(f"Descargando {label}…")
                     downloaded = True
                     try:
                         pdf = self._download(report, raw_dir, fingerprint)
-                    except DownloadError:
+                    except (DownloadBlockedError, DownloadTransientError):
                         if previous is None:
                             raise
                         self.progress(
@@ -204,6 +242,7 @@ class Catalog:
                             if (entry["sha256"], entry["download_url"])
                             != (pdf["sha256"], pdf["download_url"])
                         ] + [pdf]
+                        self._save_registry(registry)  # Lo verificado sobrevive a un fallo.
                 records.append(
                     {
                         "report": metadata,
@@ -252,12 +291,11 @@ class Catalog:
         for report in reports:
             metadata = report.to_dict()
             metadata.pop("discovered_at")
-            fingerprint = hashlib.sha256(_json_bytes(metadata)).hexdigest()
+            fingerprint = _fingerprint(metadata)
             entries = registry.get(report.report_id, [])
             previous = self._reusable(entries, report.download_url, fingerprint, raw_dir)
             if previous is not None:
-                age = self.wall_clock() - _timestamp(previous)
-                status = "sin_cambios" if age < self.revalidate_seconds else "revalidar"
+                status = "sin_cambios" if self._is_fresh(previous) else "revalidar"
             else:
                 status = "metadatos_o_archivo_cambiados" if entries else "nuevo"
             rows.append({"report_id": report.report_id, "title": report.title, "status": status})
@@ -303,6 +341,14 @@ class Catalog:
             digest = hashlib.file_digest(handle, "sha256").hexdigest()
         if digest != sha256 or path.stat().st_size != size:
             raise CatalogError("El PDF cambió antes de registrar el snapshot.")
+        with path.open("rb") as handle:
+            if handle.read(5) != b"%PDF-":
+                raise CatalogError("El archivo local no es un PDF.")
+
+    def _is_fresh(self, entry: dict[str, object]) -> bool:
+        """Vigente si se verificó hace menos del plazo; una fecha futura nunca es vigente."""
+        age = self.wall_clock() - _timestamp(entry)
+        return 0 <= age < self.revalidate_seconds
 
     def _reusable(
         self, entries: list[dict[str, object]], url: str, fingerprint: str, raw_dir: Path
@@ -326,7 +372,7 @@ class Catalog:
         if not path.exists():
             return {}
         try:
-            data = json.loads(path.read_bytes())
+            data = json.loads(path.read_bytes(), parse_constant=_reject_constant)
             entries = data["entries"]
             if data.get("version") != 1 or not isinstance(entries, dict):
                 raise ValueError("Formato inválido")
@@ -336,8 +382,7 @@ class Catalog:
                 for item in items:
                     if not isinstance(item, dict) or set(_REGISTRY_FIELDS) - set(item):
                         raise ValueError("Formato inválido")
-                    if not re.fullmatch(rf"raw/{report_id}-[0-9a-f]{{64}}\.pdf", str(item["path"])):
-                        raise ValueError("Ruta inválida")
+                    _check_entry(report_id, item)
             return entries
         except (OSError, ValueError, KeyError, TypeError) as exc:
             raise CatalogError(
