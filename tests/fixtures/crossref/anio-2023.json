@@ -1,0 +1,412 @@
+{
+ "message": {
+  "facets": {},
+  "items": [
+   {
+    "DOI": "10.32468/be.1258",
+    "deposited": {
+     "date-parts": [
+      [
+       2024,
+       6,
+       14
+      ]
+     ],
+     "date-time": "2024-06-14T14:16:47Z",
+     "timestamp": 1718374607000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2023,
+       12,
+       5
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10739/be_1258.pdf"
+     }
+    },
+    "title": [
+     "Efectos fiscales y macroeconómicos de diferentes riesgos del sistema de salud"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-eng.tr1-2023",
+    "deposited": {
+     "date-parts": [
+      [
+       2023,
+       6,
+       20
+      ]
+     ],
+     "date-time": "2023-06-20T21:32:19Z",
+     "timestamp": 1687296739000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2023,
+       6,
+       20
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10657/monetary-policy-january-2023.pdf"
+     }
+    },
+    "title": [
+     "Monetary Policy Report - January 2023"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-eng.tr2-2023",
+    "deposited": {
+     "date-parts": [
+      [
+       2023,
+       7,
+       7
+      ]
+     ],
+     "date-time": "2023-07-07T15:39:48Z",
+     "timestamp": 1688744388000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2023,
+       6,
+       21
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10658/monetary-policy-april-2023.pdf"
+     }
+    },
+    "title": [
+     "Monetary Policy Report, April 2023"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-eng.tr3-2023",
+    "deposited": {
+     "date-parts": [
+      [
+       2023,
+       9,
+       19
+      ]
+     ],
+     "date-time": "2023-09-19T20:27:13Z",
+     "timestamp": 1695155233000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2023,
+       9,
+       7
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10693/monetary-policy-report-july-2023.pdf"
+     }
+    },
+    "title": [
+     "Monetary Policy Report, July 2023"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-eng.tr4-2022",
+    "deposited": {
+     "date-parts": [
+      [
+       2023,
+       2,
+       7
+      ]
+     ],
+     "date-time": "2023-02-07T13:43:28Z",
+     "timestamp": 1675777408000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2023,
+       1,
+       2
+      ]
+     ]
+    },
+    "publisher": "Banco de la República Colombia",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10589/monetary-policy-report-october-2022.pdf"
+     }
+    },
+    "title": [
+     "Monetary Policy Report - October 2022"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-eng.tr4-2023",
+    "deposited": {
+     "date-parts": [
+      [
+       2023,
+       12,
+       22
+      ]
+     ],
+     "date-time": "2023-12-22T13:11:21Z",
+     "timestamp": 1703250681000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2023,
+       12,
+       21
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10744/monetary-policy-october-2023.pdf"
+     }
+    },
+    "title": [
+     "Monetary Policy Report, October 2023"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-spa.tr1-2023",
+    "deposited": {
+     "date-parts": [
+      [
+       2023,
+       3,
+       31
+      ]
+     ],
+     "date-time": "2023-03-31T21:36:14Z",
+     "timestamp": 1680298574000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2023,
+       1,
+       30
+      ]
+     ]
+    },
+    "publisher": "Banco de la República de Colombia",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10591/informe-politica-monetaria-enero-2023.pdf"
+     }
+    },
+    "title": [
+     "Informe de Política Monetaria - Enero de 2023"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-spa.tr2-2023",
+    "deposited": {
+     "date-parts": [
+      [
+       2023,
+       5,
+       3
+      ]
+     ],
+     "date-time": "2023-05-03T01:15:56Z",
+     "timestamp": 1683076556000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2023,
+       5,
+       2
+      ]
+     ]
+    },
+    "publisher": "Banco de la República de Colombia",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10621/informe-politica-monetaria-abril-2023.pdf"
+     }
+    },
+    "title": [
+     "Informe de Política Monetaria - Abril 2023"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-spa.tr3-2023",
+    "deposited": {
+     "date-parts": [
+      [
+       2023,
+       9,
+       21
+      ]
+     ],
+     "date-time": "2023-09-21T21:06:09Z",
+     "timestamp": 1695330369000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2023,
+       8,
+       2
+      ]
+     ]
+    },
+    "publisher": "Banco de la República de Colombia",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10675/informe-politica-monetaria-julio-2023.pdf"
+     }
+    },
+    "title": [
+     "Informe de Política Monetaria - Julio de 2023"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-spa.tr4-2023",
+    "deposited": {
+     "date-parts": [
+      [
+       2023,
+       11,
+       3
+      ]
+     ],
+     "date-time": "2023-11-03T16:38:08Z",
+     "timestamp": 1699029488000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2023,
+       11,
+       2
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10708/informe-politica-monetaria-octubre-2023.pdf"
+     }
+    },
+    "title": [
+     "Informe de Política Monetaria - octubre de 2023"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/pos-fin-hog.sem1-2023",
+    "deposited": {
+     "date-parts": [
+      [
+       2024,
+       8,
+       14
+      ]
+     ],
+     "date-time": "2024-08-14T13:57:46Z",
+     "timestamp": 1723643866000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2023,
+       6,
+       30
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10665/Inf_pos_fin_hogares_2023-I.pdf"
+     }
+    },
+    "title": [
+     "Informe especial de estabilidad financiera: posición financiera de los hogares - Primer semestre de 2023"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/rmf-1-trim.2023",
+    "deposited": {
+     "date-parts": [
+      [
+       2023,
+       4,
+       21
+      ]
+     ],
+     "date-time": "2023-04-21T23:51:01Z",
+     "timestamp": 1682121061000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2023,
+       4,
+       21
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/10617/reporte_de_mercados_financieros_1trim_2023.pdf"
+     }
+    },
+    "title": [
+     "Reporte de Mercados - Primer trimestre de 2023"
+    ],
+    "type": "report"
+   }
+  ],
+  "items-per-page": 1000,
+  "query": {
+   "search-terms": null,
+   "start-index": 0
+  },
+  "total-results": 12
+ },
+ "message-type": "work-list",
+ "message-version": "1.0.0",
+ "status": "ok"
+}

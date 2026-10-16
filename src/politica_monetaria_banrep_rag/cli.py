@@ -8,8 +8,17 @@ from contextlib import ExitStack
 from pathlib import Path
 
 from politica_monetaria_banrep_rag.catalog import Catalog, CatalogError
+from politica_monetaria_banrep_rag.crossref import CrossrefReportSource
 from politica_monetaria_banrep_rag.download import DownloadError, PdfDownloader
-from politica_monetaria_banrep_rag.source import BanrepSource, SourceError
+from politica_monetaria_banrep_rag.source import BanrepSource, ReportSource, SourceError
+
+SOURCES = ("crossref", "historico")
+
+
+def _make_source(name: str) -> ReportSource:
+    if name == "historico":
+        return BanrepSource()
+    return CrossrefReportSource(contact_email=os.getenv("BANREP_CONTACT_EMAIL") or None)
 
 
 def _local_failure(exc: OSError) -> str:
@@ -28,11 +37,13 @@ def main() -> None:
     )
     discover.add_argument("--max-reports", help="Cantidad de informes (por defecto: 12)")
     discover.add_argument("--json", action="store_true", help="Emite metadatos en JSON")
+    discover.add_argument("--fuente", choices=SOURCES, help="Origen de los metadatos")
     sync = subcommands.add_parser(
         "sincronizar", help="Descarga una ventana completa y activa el catálogo local"
     )
     sync.add_argument("--max-reports", help="Cantidad de informes (por defecto: 12)")
     sync.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
+    sync.add_argument("--fuente", choices=SOURCES, help="Origen de los metadatos")
     args = parser.parse_args()
     if args.command == "diagnostico":
         print("La sincronización del catálogo está disponible; las consultas aún no.")
@@ -50,6 +61,9 @@ def main() -> None:
             )
         if not 1 <= max_reports <= 100:
             parser.exit(2, "Error: la cantidad de informes debe estar entre 1 y 100.\n")
+        source_name = args.fuente or os.getenv("BANREP_SOURCE", "crossref")
+        if source_name not in SOURCES:
+            parser.exit(2, "Error: la fuente debe ser «crossref» o «historico».\n")
         if args.command == "sincronizar":
             data_dir = args.data_dir or os.getenv("BANREP_DATA_DIR")
             root = (
@@ -57,7 +71,7 @@ def main() -> None:
             )
             try:
                 with ExitStack() as stack:
-                    source = BanrepSource()
+                    source = _make_source(source_name)
                     stack.callback(source.client.close)
                     downloader = PdfDownloader()
                     stack.callback(downloader.client.close)
@@ -73,7 +87,7 @@ def main() -> None:
             return
         try:
             with ExitStack() as stack:
-                source = BanrepSource()
+                source = _make_source(source_name)
                 stack.callback(source.client.close)
                 reports = source.discover(max_reports)
         except OSError as exc:

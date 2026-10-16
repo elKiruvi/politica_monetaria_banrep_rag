@@ -13,8 +13,8 @@ from typing import BinaryIO
 
 from politica_monetaria_banrep_rag.download import PdfDownloader
 from politica_monetaria_banrep_rag.source import (
-    BanrepSource,
     ReportRecord,
+    ReportSource,
     SourceError,
     _official_url,
 )
@@ -74,7 +74,7 @@ class Catalog:
     def __init__(
         self,
         root: Path,
-        source: BanrepSource,
+        source: ReportSource,
         downloader: PdfDownloader,
         *,
         progress: Callable[[str], None] | None = None,
@@ -125,7 +125,9 @@ class Catalog:
         with (self.root / ".sync.lock").open("a+b") as lock:
             _lock_exclusive(lock)
             self.current()  # Un puntero anterior dañado nunca se reemplaza silenciosamente.
-            self.progress(f"Verificando los {max_reports} informes principales en la fuente…")
+            self.progress(
+                f"Consultando la fuente: ventana de {max_reports} informe(s) principal(es)…"
+            )
             reports = self.source.discover(max_reports)
             self._validate_window(reports, max_reports)
             records: list[dict[str, object]] = []

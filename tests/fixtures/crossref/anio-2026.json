@@ -1,0 +1,379 @@
+{
+ "message": {
+  "facets": {},
+  "items": [
+   {
+    "DOI": "10.32468/be.1343",
+    "deposited": {
+     "date-parts": [
+      [
+       2026,
+       2,
+       12
+      ]
+     ],
+     "date-time": "2026-02-12T16:14:56Z",
+     "timestamp": 1770912896000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2026,
+       2,
+       10
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11334/be_1343.pdf"
+     }
+    },
+    "title": [
+     "Monetary Policy and the Current Account in Latin America: Revisiting the Mundellian Paradigm"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/be.1373",
+    "deposited": {
+     "date-parts": [
+      [
+       2026,
+       10,
+       7
+      ]
+     ],
+     "date-time": "2026-10-07T23:23:46Z",
+     "timestamp": 1791415426000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2026,
+       10,
+       9
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://ideas.repec.org/p/bdr/borrec/1373.html#download"
+     }
+    },
+    "title": [
+     "Monetary Policy under Fiscal Risk"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/chee.68",
+    "deposited": {
+     "date-parts": [
+      [
+       2026,
+       9,
+       8
+      ]
+     ],
+     "date-time": "2026-09-08T20:50:29Z",
+     "timestamp": 1788900629000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2026,
+       8,
+       18
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://ideas.repec.org/p/bdr/cheedt/68.html#download?utm_source=crossref&utm_medium=referral&utm_campaign=doi_click"
+     }
+    },
+    "title": [
+     "Smithian State Formation"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/eprf.sem2-2026",
+    "deposited": {
+     "date-parts": [
+      [
+       2026,
+       8,
+       13
+      ]
+     ],
+     "date-time": "2026-08-13T22:18:23Z",
+     "timestamp": 1786659503000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2026,
+       8,
+       13
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11420/Encuesta.pdf"
+     }
+    },
+    "title": [
+     "Encuesta de percepción sobre riesgos del sistema Financiero - Junio de\n                        2026"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/evo-end-ext-ban-col.tr4-2025",
+    "deposited": {
+     "date-parts": [
+      [
+       2026,
+       2,
+       9
+      ]
+     ],
+     "date-time": "2026-02-09T20:17:10Z",
+     "timestamp": 1770668230000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2026,
+       2,
+       9
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11333/evo-end-ext-ban-col.tr4-2025.pdf"
+     }
+    },
+    "title": [
+     "Evolución reciente del endeudamiento externo de los bancos colombianos - Diciembre de 2025"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-eng.tr1-2026",
+    "deposited": {
+     "date-parts": [
+      [
+       2026,
+       3,
+       12
+      ]
+     ],
+     "date-time": "2026-03-12T17:27:45Z",
+     "timestamp": 1773336465000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2026,
+       2,
+       4
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11330/inf-pol-mont-eng.tr1-2026.pdf"
+     }
+    },
+    "title": [
+     "Monetary Policy Report - January 2026"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-eng.tr2-2026",
+    "deposited": {
+     "date-parts": [
+      [
+       2026,
+       6,
+       12
+      ]
+     ],
+     "date-time": "2026-06-12T15:28:18Z",
+     "timestamp": 1781278098000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2026,
+       5,
+       5
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11373/IPM-abril-2026-Monetary-Policy-Report.pdf"
+     }
+    },
+    "title": [
+     "Monetary Policy Report - April 2026"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-eng.tr3-2026",
+    "deposited": {
+     "date-parts": [
+      [
+       2026,
+       9,
+       3
+      ]
+     ],
+     "date-time": "2026-09-03T17:03:23Z",
+     "timestamp": 1788455003000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2026,
+       8,
+       4
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11413/inf-pol-mont-eng.tr3-2026.pdf"
+     }
+    },
+    "title": [
+     "Monetary Policy Report - July 2026"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-spa.tr1-2026",
+    "deposited": {
+     "date-parts": [
+      [
+       2026,
+       2,
+       5
+      ]
+     ],
+     "date-time": "2026-02-05T16:50:57Z",
+     "timestamp": 1770310257000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2026,
+       2,
+       3
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11329/inf-pol-mont-spa.tr1-2026.pdf"
+     }
+    },
+    "title": [
+     "Informe de Política Monetaria - Enero de 2026"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-spa.tr2-2026",
+    "deposited": {
+     "date-parts": [
+      [
+       2026,
+       5,
+       5
+      ]
+     ],
+     "date-time": "2026-05-05T20:40:05Z",
+     "timestamp": 1778013605000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2026,
+       5,
+       5
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11372/IPM-abril-2026.pdf"
+     }
+    },
+    "title": [
+     "Informe de Política Monetaria - abril de 2026"
+    ],
+    "type": "report"
+   },
+   {
+    "DOI": "10.32468/inf-pol-mont-spa.tr3-2026",
+    "deposited": {
+     "date-parts": [
+      [
+       2026,
+       8,
+       18
+      ]
+     ],
+     "date-time": "2026-08-18T18:40:43Z",
+     "timestamp": 1787078443000
+    },
+    "published": {
+     "date-parts": [
+      [
+       2026,
+       8,
+       4
+      ]
+     ]
+    },
+    "publisher": "Banco de la República",
+    "resource": {
+     "primary": {
+      "URL": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11411/IPM-julio-2026.pdf"
+     }
+    },
+    "title": [
+     "Informe de Política Monetaria - julio de 2026"
+    ],
+    "type": "report"
+   }
+  ],
+  "items-per-page": 1000,
+  "query": {
+   "search-terms": null,
+   "start-index": 0
+  },
+  "total-results": 11
+ },
+ "message-type": "work-list",
+ "message-version": "1.0.0",
+ "status": "ok"
+}

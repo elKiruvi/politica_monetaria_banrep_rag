@@ -73,10 +73,12 @@ def _parts(url: str, allowed_hosts: frozenset[str]):
 
 
 def page_url(url: str) -> str:
-    """URL de una ficha o página del sitio institucional (nunca de descarga)."""
-    parts = _parts(url, SITE_HOSTS)
+    """URL de una página del sitio institucional o de un DOI (nunca de descarga)."""
+    parts = _parts(url, SITE_HOSTS | {DOI_HOST})
     if parts.fragment:
         raise UnsafeUrlError("La URL de la página no puede tener fragmento.")
+    if parts.hostname == DOI_HOST and (parts.query or not _DOI_PATH.fullmatch(parts.path)):
+        raise UnsafeUrlError("La URL del DOI no es válida.")
     return url
 
 
