@@ -6,6 +6,7 @@ import math
 import os
 import random
 import re
+import stat
 import tempfile
 import time
 import zlib
@@ -35,12 +36,12 @@ def _retry_after(value: str | None) -> float | None:
         return None
     try:
         seconds = float(value)
-        return max(0.0, min(seconds, 10.0)) if math.isfinite(seconds) else None
+        return max(0.0, seconds) if math.isfinite(seconds) else None
     except ValueError:
         try:
             date = parsedate_to_datetime(value)
             seconds = date.timestamp() - time.time()
-            return max(0.0, min(seconds, 10.0)) if math.isfinite(seconds) else None
+            return max(0.0, seconds) if math.isfinite(seconds) else None
         except (TypeError, ValueError, OverflowError):
             return None
 
@@ -68,7 +69,9 @@ class PdfDownloader:
         attempts: int = 3,
     ) -> None:
         if (
-            min(max_bytes, max_pages, max_seconds, attempts) < 1
+            not isinstance(attempts, int)
+            or isinstance(attempts, bool)
+            or min(max_bytes, max_pages, max_seconds, attempts) < 1
             or not math.isfinite(max_seconds)
             or attempts > 5
         ):
@@ -228,17 +231,42 @@ class PdfDownloader:
                 raise DownloadError("El número de páginas excede los límites permitidos.")
             self._check_deadline(deadline)
             target = raw_dir / f"{report_id}-{digest.hexdigest()}.pdf"
-            if target.is_symlink() or (target.exists() and not target.is_file()):
-                raise DownloadError("El destino del PDF no es un archivo seguro.")
-            if target.is_file() and target.stat().st_size == total:
-                with target.open("rb") as existing:
-                    if hashlib.file_digest(existing, "sha256").hexdigest() == digest.hexdigest():
-                        return DownloadResult(
-                            target, digest.hexdigest(), total, pages, url, mime or "application/pdf"
-                        )
+            if self._existing_file_is_identical(target, digest.hexdigest(), total):
+                return DownloadResult(
+                    target, digest.hexdigest(), total, pages, url, mime or "application/pdf"
+                )
             os.replace(tmp, target)
             return DownloadResult(
                 target, digest.hexdigest(), total, pages, url, mime or "application/pdf"
             )
         finally:
             tmp.unlink(missing_ok=True)
+
+    @staticmethod
+    def _existing_file_is_identical(target: Path, sha256: str, size: int) -> bool:
+        if target.is_symlink():
+            raise DownloadError("El destino del PDF no es un archivo seguro.")
+        no_follow = getattr(os, "O_NOFOLLOW", None)
+        if no_follow is None:
+            # Sin apertura segura, reemplazar el enlace en vez de leer un destino ajeno.
+            return False
+        try:
+            fd = os.open(target, os.O_RDONLY | no_follow)
+        except FileNotFoundError:
+            return False
+        except OSError as exc:
+            raise DownloadError("El destino del PDF no se pudo abrir con seguridad.") from exc
+        with os.fdopen(fd, "rb") as existing:
+            original = os.fstat(existing.fileno())
+            if not stat.S_ISREG(original.st_mode):
+                raise DownloadError("El destino del PDF no es un archivo regular.")
+            if original.st_size != size:
+                return False
+            same_hash = hashlib.file_digest(existing, "sha256").hexdigest() == sha256
+            try:
+                current = target.stat(follow_symlinks=False)
+            except FileNotFoundError as exc:
+                raise DownloadError("El destino del PDF cambió durante la validación.") from exc
+            if (original.st_dev, original.st_ino) != (current.st_dev, current.st_ino):
+                raise DownloadError("El destino del PDF cambió durante la validación.")
+            return same_hash

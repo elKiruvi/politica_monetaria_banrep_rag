@@ -1,6 +1,7 @@
 import gzip
 import hashlib
 import io
+import os
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
@@ -335,7 +336,8 @@ def test_existing_symlink_is_rejected(tmp_path, report, pdf_bytes):
 
 def test_retry_after_parses_http_date_and_ignores_invalid_values():
     later = format_datetime(datetime.now(UTC) + timedelta(seconds=30), usegmt=True)
-    assert _retry_after(later) == 10.0
+    assert 0 < _retry_after(later) <= 30
+    assert _retry_after("120") == 120.0
     assert _retry_after("NaN") is None
     assert _retry_after("fecha imposible") is None
 
@@ -345,3 +347,57 @@ def test_invalid_download_limits_are_rejected():
         PdfDownloader(max_seconds=float("nan"))
     with pytest.raises(ValueError, match="límites"):
         PdfDownloader(attempts=6)
+    with pytest.raises(ValueError, match="límites"):
+        PdfDownloader(attempts=1.5)
+
+
+def test_retry_after_longer_than_deadline_stops_without_early_retry(tmp_path, report):
+    calls = 0
+
+    def respond(_):
+        nonlocal calls
+        calls += 1
+        return httpx.Response(429, headers={"retry-after": "120"})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(DownloadError, match="tiempo máximo"):
+            PdfDownloader(client, max_seconds=30).download(report, tmp_path)
+    assert calls == 1
+
+
+def test_symlink_inserted_before_open_is_rejected(tmp_path, report, pdf_bytes, monkeypatch):
+    digest = hashlib.sha256(pdf_bytes).hexdigest()
+    target = tmp_path / f"{report.report_id}-{digest}.pdf"
+    outside = tmp_path.parent / "documento-externo.pdf"
+    outside.write_bytes(pdf_bytes)
+    original_open = os.open
+
+    def replaced_open(path, flags, *args, **kwargs):
+        if str(path) == str(target):
+            target.symlink_to(outside)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr("politica_monetaria_banrep_rag.download.os.open", replaced_open)
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        )
+    ) as client:
+        with pytest.raises(DownloadError, match="seguridad"):
+            PdfDownloader(client).download(report, tmp_path)
+    assert outside.read_bytes() == pdf_bytes
+
+
+def test_without_no_follow_replaces_instead_of_reading_existing_file(
+    tmp_path, report, pdf_bytes, monkeypatch
+):
+    target = tmp_path / f"{report.report_id}-{hashlib.sha256(pdf_bytes).hexdigest()}.pdf"
+    target.write_bytes(b"x" * len(pdf_bytes))
+    monkeypatch.delattr("politica_monetaria_banrep_rag.download.os.O_NOFOLLOW", raising=False)
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        )
+    ) as client:
+        assert PdfDownloader(client).download(report, tmp_path).path == target
+    assert target.read_bytes() == pdf_bytes
