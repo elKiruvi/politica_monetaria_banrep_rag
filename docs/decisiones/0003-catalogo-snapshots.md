@@ -1,6 +1,6 @@
 # 0003 — Catálogo activado por snapshot
 
-**Decisión:** mantener PDF por hash en `raw/`, snapshots JSON inmutables en `snapshots/` y un único puntero `current.json`. La sincronización adquiere un bloqueo local, verifica la ventana completa de informes principales en español, descarga y comprueba todos los PDF, y solo entonces cambia el puntero mediante reemplazo atómico. Los lectores obtienen el identificador del snapshot activo antes de leer sus registros.
+**Decisión:** mantener PDF por hash en `raw/`, snapshots JSON inmutables en `snapshots/` y un único puntero `current.json`. La sincronización adquiere un bloqueo local, verifica la ventana completa de informes principales en español, descarga y comprueba todos los PDF, sincroniza `raw/` para hacer duraderos sus nombres, y solo entonces cambia el puntero mediante reemplazo atómico. Los lectores obtienen el identificador del snapshot activo antes de leer sus registros.
 
 Una nueva fecha de descubrimiento sin cambios en los documentos no crea otra revisión. Un archivo corregido tiene otro hash y conserva el anterior; cambiar N crea otro snapshot. Si falla una descarga o la publicación del puntero antes del reemplazo, la versión anterior permanece activa. Pueden quedar PDF o snapshots no activos para una operación de limpieza futura: **no eliminarlos** mientras puedan respaldar versiones anteriores.
 

@@ -182,3 +182,25 @@ def test_incomplete_discovery_does_not_replace_active_window(tmp_path, pdf_bytes
         with pytest.raises(CatalogError, match="toda la ventana"):
             catalog.sync(2)
     assert catalog.current()[0] == original
+
+
+def test_raw_directory_sync_failure_keeps_prior_pointer(tmp_path, pdf_bytes, monkeypatch):
+    source = Source([report(7), report(4)])
+    catalog, client = make_catalog(
+        tmp_path, source, lambda _: httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+    )
+    with client:
+        original = catalog.sync(1)
+        from politica_monetaria_banrep_rag import catalog as module
+
+        real_sync = module._sync_directory
+
+        def fail_raw(path):
+            if path == catalog.root / "raw":
+                raise OSError("Directorio no sincronizado")
+            real_sync(path)
+
+        monkeypatch.setattr(module, "_sync_directory", fail_raw)
+        with pytest.raises(OSError, match="Directorio"):
+            catalog.sync(2)
+    assert catalog.current()[0] == original

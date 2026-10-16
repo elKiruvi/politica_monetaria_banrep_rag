@@ -27,6 +27,14 @@ def _json_bytes(value: object) -> bytes:
     ).encode("utf-8")
 
 
+def _sync_directory(path: Path) -> None:
+    fd = os.open(path, os.O_RDONLY)
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
+
+
 def _atomic_write(path: Path, data: bytes) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, name = tempfile.mkstemp(prefix=".snapshot-", dir=path.parent)
@@ -37,11 +45,7 @@ def _atomic_write(path: Path, data: bytes) -> None:
             handle.flush()
             os.fsync(handle.fileno())
         os.replace(tmp, path)
-        directory = os.open(path.parent, os.O_RDONLY)
-        try:
-            os.fsync(directory)
-        finally:
-            os.close(directory)
+        _sync_directory(path.parent)
     finally:
         tmp.unlink(missing_ok=True)
 
@@ -122,6 +126,8 @@ class Catalog:
                         },
                     }
                 )
+            # Los nombres de los PDF deben ser duraderos antes del puntero.
+            _sync_directory(raw_dir)
             data = _json_bytes({"version": 1, "reports": records})
             snapshot_id = hashlib.sha256(data).hexdigest()
             snapshot_path = self.root / "snapshots" / f"{snapshot_id}.json"
