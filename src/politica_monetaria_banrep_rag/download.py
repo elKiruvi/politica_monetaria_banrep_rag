@@ -231,7 +231,9 @@ class PdfDownloader:
                 raise DownloadError("El número de páginas excede los límites permitidos.")
             self._check_deadline(deadline)
             target = raw_dir / f"{report_id}-{digest.hexdigest()}.pdf"
-            if self._existing_file_is_identical(target, digest.hexdigest(), total):
+            identical = self._existing_file_is_identical(target, digest.hexdigest(), total)
+            self._check_deadline(deadline)
+            if identical:
                 return DownloadResult(
                     target, digest.hexdigest(), total, pages, url, mime or "application/pdf"
                 )
@@ -244,14 +246,19 @@ class PdfDownloader:
 
     @staticmethod
     def _existing_file_is_identical(target: Path, sha256: str, size: int) -> bool:
-        if target.is_symlink():
+        try:
+            initial = target.lstat()
+        except FileNotFoundError:
+            return False
+        if not stat.S_ISREG(initial.st_mode):
             raise DownloadError("El destino del PDF no es un archivo seguro.")
         no_follow = getattr(os, "O_NOFOLLOW", None)
-        if no_follow is None:
+        nonblocking = getattr(os, "O_NONBLOCK", None)
+        if no_follow is None or nonblocking is None:
             # Sin apertura segura, reemplazar el enlace en vez de leer un destino ajeno.
             return False
         try:
-            fd = os.open(target, os.O_RDONLY | no_follow)
+            fd = os.open(target, os.O_RDONLY | no_follow | nonblocking)
         except FileNotFoundError:
             return False
         except OSError as exc:

@@ -368,12 +368,14 @@ def test_retry_after_longer_than_deadline_stops_without_early_retry(tmp_path, re
 def test_symlink_inserted_before_open_is_rejected(tmp_path, report, pdf_bytes, monkeypatch):
     digest = hashlib.sha256(pdf_bytes).hexdigest()
     target = tmp_path / f"{report.report_id}-{digest}.pdf"
+    target.write_bytes(pdf_bytes)
     outside = tmp_path.parent / "documento-externo.pdf"
     outside.write_bytes(pdf_bytes)
     original_open = os.open
 
     def replaced_open(path, flags, *args, **kwargs):
         if str(path) == str(target):
+            target.unlink()
             target.symlink_to(outside)
         return original_open(path, flags, *args, **kwargs)
 
@@ -400,4 +402,51 @@ def test_without_no_follow_replaces_instead_of_reading_existing_file(
         )
     ) as client:
         assert PdfDownloader(client).download(report, tmp_path).path == target
+    assert target.read_bytes() == pdf_bytes
+
+
+def test_fifo_inserted_before_open_cannot_block_download(tmp_path, report, pdf_bytes, monkeypatch):
+    if not hasattr(os, "mkfifo") or not hasattr(os, "O_NONBLOCK"):
+        pytest.skip("La plataforma no proporciona FIFO no bloqueante")
+    target = tmp_path / f"{report.report_id}-{hashlib.sha256(pdf_bytes).hexdigest()}.pdf"
+    target.write_bytes(pdf_bytes)
+    original_open = os.open
+
+    def insert_fifo(path, flags, *args, **kwargs):
+        if str(path) == str(target):
+            target.unlink()
+            os.mkfifo(target)
+        return original_open(path, flags, *args, **kwargs)
+
+    monkeypatch.setattr("politica_monetaria_banrep_rag.download.os.open", insert_fifo)
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        )
+    ) as client:
+        with pytest.raises(DownloadError, match="regular"):
+            PdfDownloader(client, max_seconds=1).download(report, tmp_path)
+
+
+def test_hashing_existing_file_cannot_succeed_after_deadline(
+    tmp_path, report, pdf_bytes, monkeypatch
+):
+    target = tmp_path / f"{report.report_id}-{hashlib.sha256(pdf_bytes).hexdigest()}.pdf"
+    target.write_bytes(pdf_bytes)
+    clock = [0.0]
+    monkeypatch.setattr("politica_monetaria_banrep_rag.download.time.monotonic", lambda: clock[0])
+    original_digest = hashlib.file_digest
+
+    def slow_digest(*args, **kwargs):
+        clock[0] = 2.0
+        return original_digest(*args, **kwargs)
+
+    monkeypatch.setattr("politica_monetaria_banrep_rag.download.hashlib.file_digest", slow_digest)
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        )
+    ) as client:
+        with pytest.raises(DownloadError, match="tiempo máximo"):
+            PdfDownloader(client, max_seconds=1).download(report, tmp_path)
     assert target.read_bytes() == pdf_bytes
