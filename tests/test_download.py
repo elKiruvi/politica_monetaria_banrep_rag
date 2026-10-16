@@ -258,6 +258,7 @@ def test_repeated_bytes_keep_mtime_and_correction_keeps_old_pdf(tmp_path, report
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         downloader = PdfDownloader(client)
         first = downloader.download(report, tmp_path)
+        os.utime(first.path, (946684800, 946684800))
         initial_mtime = first.path.stat().st_mtime_ns
         assert downloader.download(report, tmp_path).path == first.path
         assert first.path.stat().st_mtime_ns == initial_mtime
@@ -403,6 +404,22 @@ def test_without_no_follow_replaces_instead_of_reading_existing_file(
     ) as client:
         assert PdfDownloader(client).download(report, tmp_path).path == target
     assert target.read_bytes() == pdf_bytes
+
+
+def test_injected_client_without_timeout_receives_bounded_request_timeout(
+    tmp_path, report, pdf_bytes
+):
+    observed = []
+
+    def respond(request):
+        observed.append(request.extensions["timeout"])
+        return httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+
+    with httpx.Client(transport=httpx.MockTransport(respond), timeout=None) as client:
+        assert PdfDownloader(client, max_seconds=3).download(report, tmp_path).pages_count == 1
+    assert len(observed) == 1
+    assert 0 < observed[0]["read"] <= 2
+    assert 0 < observed[0]["connect"] <= 3
 
 
 def test_fifo_inserted_before_open_cannot_block_download(tmp_path, report, pdf_bytes, monkeypatch):

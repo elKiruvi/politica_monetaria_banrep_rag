@@ -137,8 +137,14 @@ class PdfDownloader:
         for _ in range(6):
             self._check_deadline(deadline)
             self._reject_client_credentials(self.client)
+            remaining = deadline - time.monotonic()
+            if remaining <= 0:
+                raise DownloadError("La descarga superó el tiempo máximo.")
+            timeout = httpx.Timeout(min(remaining, 2.0), connect=min(remaining, 5.0))
             try:
-                with self.client.stream("GET", url, follow_redirects=False) as response:
+                with self.client.stream(
+                    "GET", url, follow_redirects=False, timeout=timeout
+                ) as response:
                     # La fuente pública no requiere ni conserva cookies entre saltos.
                     self.client.cookies.clear()
                     if response.status_code in {301, 302, 303, 307, 308}:
