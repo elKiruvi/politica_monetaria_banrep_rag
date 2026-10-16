@@ -142,3 +142,49 @@ def test_dense_table_and_toc_are_detected(tmp_path):
     notes = [b.text for b in blocks if b.kind == "source_note"]
     (table,) = build_tables(caption.text, 2, cells, notes)
     assert table.columns == ("2023", "2024", "2025", "2026") and table.bold_is_projection
+
+
+def test_ligatures_more_frequent_than_plain_f_are_still_repaired(tmp_path):
+    path = tmp_path / "ligaduras2.pdf"
+    items = [
+        (300, 700, 8, b"La in\xb1aci\xf3n y el gr\xe1\xb0co; la in\xb1aci\xf3n \xb0nal", "L"),
+        (300, 688, 8, b"d\xe9\xb0cit \xb0scal y la in\xb1aci\xf3n con forma", "L"),
+    ]
+    path.write_bytes(make_layout_pdf([items]))
+    text = " ".join(b.text for b in extract_layout(path).pages[0].blocks)
+    assert "inflación" in text and "gráfico" in text and "déficit fiscal" in text
+    assert "forma" in text
+
+
+def test_annex_continuation_without_title_and_orphan_small_text(tmp_path):
+    path = tmp_path / "continuacion.pdf"
+    page = annex_page()[1:] + [(400, 300, 5.5, "dic-22", "R"), (450, 300, 5.5, "4 6", "R")]
+    path.write_bytes(make_layout_pdf([page]))
+    blocks = extract_layout(path).pages[0].blocks
+    cells = [b for b in blocks if b.kind == "table_cell"]
+    assert cells and all(b.region is not None for b in cells)
+    assert not any(b.kind == "caption" for b in blocks)  # sin título: continuación
+    assert {b.text for b in blocks if b.kind == "small_text"} == {"dic-22", "4 6"}
+
+
+def test_chapter_title_in_sidebar_comes_first_and_note_calls_are_removed(tmp_path):
+    path = tmp_path / "capitulo.pdf"
+    items = [
+        (57, 700, 16, "1. Resumen", "B"),
+        (291, 760, 10, "1.1 Resumen macroeconómico6, 7", "B"),
+        (291, 740, 10, "La inflación bajaría al 3 % en 2026 según el pronóstico.", "R"),
+        (291, 728, 10, "El crecimiento económico seguiría recuperándose este año.", "R"),
+        (57, 600, 8, "Gráfico 1.1 Inflación", "R"),
+        (57, 560, 6, "Fuente: DANE.", "R"),
+        (200, 760, 10, "x", "R"),
+    ]
+    path.write_bytes(make_layout_pdf([items]))
+    blocks = extract_layout(path).pages[0].blocks
+    headings = [b.text for b in blocks if b.kind == "heading"]
+    assert headings == ["1. Resumen", "1.1 Resumen macroeconómico"]
+
+
+def test_unicode_ligatures_are_expanded():
+    from politica_monetaria_banrep_rag.layout import _join_lines
+
+    assert _join_lines(["La in\ufb02ación y el gr\u00e1\ufb01co"]) == "La inflación y el gráfico"

@@ -14,7 +14,8 @@ from pathlib import Path
 
 from pdfminer.high_level import extract_pages
 from pdfminer.layout import LAParams, LTChar, LTPage, LTTextBoxHorizontal, LTTextLineHorizontal
-from pdfminer.pdfparser import PDFSyntaxError
+from pdfminer.pdfexceptions import PDFException
+from pdfminer.psexceptions import PSException
 
 PARSER_VERSION = "pdfminer-layout-1"
 
@@ -73,11 +74,14 @@ class PageLayout:
     blocks: tuple[Block, ...] = field(default_factory=tuple)
 
 
+_UNICODE_LIGATURES = str.maketrans({"ﬀ": "ff", "ﬁ": "fi", "ﬂ": "fl", "ﬃ": "ffi", "ﬄ": "ffl"})
+
+
 def _join_lines(lines: Iterable[str]) -> str:
     """Une líneas; solo elimina el guion de corte si la línea siguiente sigue en minúscula."""
     text = ""
     for raw in lines:
-        line = " ".join(raw.split())
+        line = " ".join(raw.translate(_UNICODE_LIGATURES).split())
         if not line:
             continue
         if text.endswith("-") and not text.endswith(" -") and line[:1].islower():
@@ -122,7 +126,8 @@ def _ligature_table(pages: list[LTPage]) -> tuple[_Ligatures, int]:
     table: _Ligatures = {}
     unresolved = 0
     for font, values in widths.items():
-        regular = Counter(values).most_common(1)[0][0]
+        # La «f» sola es el glifo más estrecho; las ligaduras pueden ser más frecuentes que ella.
+        regular = _clusters_1d(values, 0.006)[0]
         wide = [w for w in values if w >= 1.5 * regular]
         groups = _clusters_1d(wide, 0.006)
         if len(groups) == 2:
@@ -224,7 +229,7 @@ def _classify(blocks: list[Block], width: float, height: float) -> tuple[list[Bl
         elif block.size >= 13 and block.bold and len(block.text) < 160:
             kind, level = "heading", 1
         elif (match := _NUMBERED_HEADING.match(block.text)) and (
-            len(block.text) < 120 and block.size >= 9.5 and "\n" not in block.text
+            len(block.text) < 120 and block.size >= 9.5 and len(block.lines) <= 2
         ):
             kind, level = "heading", match[1].count(".") + 1
         result.append(_with(block, kind=kind, level=level))
@@ -336,8 +341,17 @@ def _mark_dense_tables(blocks: list[Block], region: int) -> tuple[list[Block], i
     top = max(line.bbox[3] for line in numeric) + 60
     bottom = min(line.bbox[1] for line in numeric) - 12
     region += 1
-    headings = [b for b in blocks if b.kind == "heading" and b.bbox[1] >= top - 40]
-    caption = max(headings, key=lambda b: b.bbox[1], default=None)
+    first_row = max(line.bbox[3] for line in numeric)
+    headings = [
+        b
+        for b in blocks
+        if b.kind == "heading"
+        and b.bbox[1] >= first_row
+        and re.match(r"(Anexo|Cuadro|Tabla)\b", b.text, re.IGNORECASE)
+    ]
+    # El título «Anexo/Cuadro» más cercano por encima; sin él, la región queda sin leyenda y
+    # el procesamiento la trata como continuación del cuadro anterior.
+    caption = min(headings, key=lambda b: b.bbox[1] - first_row, default=None)
     result = []
     for block in blocks:
         small = block.size <= 7.5 or (block.size <= 8.5 and len(block.text) <= 60)
@@ -349,6 +363,17 @@ def _mark_dense_tables(blocks: list[Block], region: int) -> tuple[list[Block], i
             block = _with(block, region=region)
         result.append(block)
     return result, region
+
+
+def _mark_small_orphans(blocks: list[Block]) -> list[Block]:
+    """Letra de menos de 6,5 pt fuera de gráficos y cuadros: rótulos de gráficos sin leyenda
+    reconocible («dic-22», «4 6»). No es texto de lectura; se excluye y se cuenta."""
+    return [
+        _with(b, kind="small_text")
+        if b.region is None and b.kind in {"paragraph", "footnote"} and b.size < 6.5
+        else b
+        for b in blocks
+    ]
 
 
 def _merge_footnote_markers(blocks: list[Block]) -> list[Block]:
@@ -367,15 +392,15 @@ def _merge_footnote_markers(blocks: list[Block]) -> list[Block]:
             target = min(candidates, key=lambda t: t.bbox[0] - marker.bbox[2])
             merged[id(target)] = _with(target, text=f"{marker.text} {target.text}")
             used.add(id(marker))
-    numbers = {m.text for m in markers}
     result = []
     for block in blocks:
         if id(block) in used:
             continue
         block = merged.get(id(block), block)
-        if block.kind == "heading" and (call := re.search(r"(?<=[^\W\d])(\d{1,2})$", block.text)):
-            if call[1] in numbers:
-                block = _with(block, text=block.text[: call.start()])
+        call = re.search(r"(?<=[a-záéíóúñ])\d{1,2}(?:,\s?\d{1,2})*$", block.text)
+        if block.kind == "heading" and call:
+            # «riesgos1», «Mercado laboral6, 7»: llamadas a nota pegadas al título.
+            block = _with(block, text=block.text[: call.start()])
         result.append(block)
     return result
 
@@ -384,8 +409,8 @@ def _order(blocks: list[Block], main_column: int) -> list[Block]:
     def key(block: Block) -> tuple[int, float, float]:
         if block.kind in {"running_header", "page_number"}:
             rank = 9
-        elif block.column == -1:
-            rank = 0
+        elif block.column == -1 or (block.kind == "heading" and block.size >= 13):
+            rank = 0  # títulos de capítulo, aunque estén en la barra lateral
         elif block.kind == "footnote":
             rank = 3
         elif block.column == main_column:
@@ -412,8 +437,8 @@ def extract_layout(path: Path, *, max_pages: int = 400) -> DocumentLayout:
             raw_pages.append(page)
             if len(raw_pages) > max_pages:
                 raise LayoutError("El PDF excede el número de páginas permitido.")
-    except (PDFSyntaxError, ValueError, TypeError, KeyError) as exc:
-        raise LayoutError("No se pudo analizar el diseño del PDF.") from exc
+    except (PDFException, PSException, ValueError, TypeError, KeyError) as exc:
+        raise LayoutError("No se pudo analizar el diseño del PDF (¿dañado o cifrado?).") from exc
     if not raw_pages:
         raise LayoutError("El PDF no tiene páginas.")
     ligatures, unresolved = _ligature_table(raw_pages)
@@ -437,6 +462,6 @@ def extract_layout(path: Path, *, max_pages: int = 400) -> DocumentLayout:
         chars = Counter(b.column for b in marked if b.kind == "paragraph" for _ in b.text)
         main_column = chars.most_common(1)[0][0] if chars else 0
         dense, region = _mark_dense_tables(_footnotes(marked, main_column), region)
-        blocks = _order(_merge_footnote_markers(dense), main_column)
+        blocks = _order(_merge_footnote_markers(_mark_small_orphans(dense)), main_column)
         pages.append(PageLayout(number, label, width, height, tuple(blocks)))
     return DocumentLayout(tuple(pages), LigatureRepair(counts["repaired"], unresolved))
