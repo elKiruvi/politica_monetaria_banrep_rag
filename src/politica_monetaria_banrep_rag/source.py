@@ -134,6 +134,8 @@ def parse_history(html: str, checked_at: str) -> list[ReportRecord]:
             raise SourceError("Una fila del histórico carece de título clasificable.")
         title = _safe_text(link.get_text(" ", strip=True))
         match = MAIN_TITLE.fullmatch(title)
+        if match and (match[1].lower() not in MONTHS or not match[2].isascii()):
+            match = None
         if not match:
             if title.casefold().startswith("informe de política monetaria"):
                 raise SourceError(f"No se puede clasificar el informe principal «{title}».")
