@@ -188,3 +188,16 @@ def test_unicode_ligatures_are_expanded():
     from politica_monetaria_banrep_rag.layout import _join_lines
 
     assert _join_lines(["La in\ufb02ación y el gr\u00e1\ufb01co"]) == "La inflación y el gráfico"
+
+
+def test_small_notes_are_notes_not_chart_labels(tmp_path):
+    path = tmp_path / "notas.pdf"
+    items = [
+        (57, 700, 6, "Significancia estadística: * p < 0,10; ** p < 0,05.", "R"),
+        (57, 680, 6, "* Para el consumo de los hogares. Fuente: DANE.", "R"),
+        (57, 660, 5, "dic-22", "R"),
+    ]
+    path.write_bytes(make_layout_pdf([items]))
+    kinds = {b.text[:12]: b.kind for b in extract_layout(path).pages[0].blocks}
+    assert kinds["Significanci"] == "source_note" and kinds["* Para el co"] == "source_note"
+    assert kinds["dic-22"] == "small_text"

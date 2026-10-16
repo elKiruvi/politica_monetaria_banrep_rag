@@ -22,6 +22,7 @@ PARSER_VERSION = "pdfminer-layout-1"
 _CAPTION = re.compile(r"^(Gráfico|Cuadro|Recuadro|Diagrama|Mapa|Figura)\s+[A-Z]?\d+(\.\d+)*\b")
 _SOURCE = re.compile(
     r"^(Fuentes?|Notas?|Nota metodológica)\s*:|^\([a-z]{2,4}\):|^[a-z]/\s|^n\.\s?[ad]\.\s?:"
+    r"|^\*+\s|^Significancia\b"
 )
 _NUMBERED_HEADING = re.compile(r"^(\d+(?:\.\d+){0,3})\.?\s+\S")
 _RUNNING_HEADER = re.compile(r"^Informe de Política Monetaria\s*\|", re.IGNORECASE)
@@ -175,7 +176,7 @@ def _box(
             _char_text(obj, ligatures, counts) if isinstance(obj, LTChar) else obj.get_text()
             for obj in line
         )
-        text = " ".join(raw.split())
+        text = " ".join(raw.translate(_UNICODE_LIGATURES).split())
         if text:
             font, size = _dominant(line_chars)
             x0, y0, x1, y1 = (round(v, 1) for v in line.bbox)
@@ -398,7 +399,7 @@ def _merge_footnote_markers(blocks: list[Block]) -> list[Block]:
             continue
         block = merged.get(id(block), block)
         call = re.search(r"(?<=[a-záéíóúñ])\d{1,2}(?:,\s?\d{1,2})*$", block.text)
-        if block.kind == "heading" and call:
+        if call and (block.kind == "heading" or block.text.startswith("Recuadro")):
             # «riesgos1», «Mercado laboral6, 7»: llamadas a nota pegadas al título.
             block = _with(block, text=block.text[: call.start()])
         result.append(block)
