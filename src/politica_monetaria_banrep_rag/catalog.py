@@ -20,6 +20,7 @@ from politica_monetaria_banrep_rag.download import (
     inspect_pdf,
 )
 from politica_monetaria_banrep_rag.importer import Identification, ImportFileError, identify
+from politica_monetaria_banrep_rag.isolation import IsolationError, run_isolated
 from politica_monetaria_banrep_rag.source import (
     MONTHS,
     ReportRecord,
@@ -89,6 +90,8 @@ def _check_entry(report_id: str, item: dict[str, object]) -> None:
             or report.get("report_id") != report_id
             or report.get("reference_period") != report_id[4:]
             or not isinstance(report.get("title"), str)
+            or not isinstance(report.get("download_url"), str)
+            or not isinstance(report.get("source_url"), str)
         ):
             raise ValueError("Entrada de importación inválida")
 
@@ -370,6 +373,10 @@ class Catalog:
         with (self.root / ".sync.lock").open("a+b") as lock:
             _lock_exclusive(lock)
             registry = self._load_registry()
+            for stale in raw_dir.glob(".importacion-*.pdf"):
+                # Restos de una importación interrumpida (p. ej. SIGTERM); el bloqueo garantiza
+                # que no pertenecen a otra importación en curso.
+                stale.unlink(missing_ok=True)
             fd, tmp_name = tempfile.mkstemp(prefix=".importacion-", suffix=".pdf", dir=raw_dir)
             tmp = Path(tmp_name)
             try:
@@ -385,10 +392,10 @@ class Catalog:
                     handle.flush()
                     os.fsync(handle.fileno())
                 try:
-                    pages = inspect_pdf(tmp)
-                except DownloadError as exc:
+                    pages = run_isolated(inspect_pdf, tmp, timeout=60, memory_mb=1024)
+                except IsolationError as exc:
                     raise CatalogError(f"El archivo no es un PDF válido: {exc}") from exc
-                identification = identify(tmp, expected_period)
+                identification = identify(tmp, expected_period, display_name=source_path.name)
                 identification = Identification(
                     identification.report_id,
                     identification.evidence,

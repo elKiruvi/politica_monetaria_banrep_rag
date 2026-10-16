@@ -56,50 +56,64 @@ def _period(match: re.Match[str]) -> str:
     return f"{int(match[2]):04d}-{MONTHS[match[1].lower()]:02d}"
 
 
+_COVER_CHARS = 5_000  # las portadas reales caben de sobra; acota el trabajo con PDF hostiles
+
+
 def _cover_period(cover: str) -> str | None:
-    """El periodo más cercano a la frase de la serie, si está a menos de 80 caracteres."""
+    """El periodo más cercano a la frase de la serie, si está a menos de 80 caracteres.
+
+    Lineal: cada aparición de la serie solo mira la ventana de 80 caracteres a su alrededor.
+    """
+    cover = cover[:_COVER_CHARS]
     best: tuple[int, str] | None = None
     for series in _SERIES_RE.finditer(cover):
-        for match in _MONTH_YEAR.finditer(cover):
+        start = max(0, series.start() - _ADJACENCY - 20)
+        window = cover[start : series.end() + _ADJACENCY + 20]
+        for match in _MONTH_YEAR.finditer(window):
             if match[1].lower() not in MONTHS:
                 continue
-            gap = (
-                match.start() - series.end()
-                if match.start() >= series.end()
-                else series.start() - match.end()
-            )
+            m_start, m_end = start + match.start(), start + match.end()
+            gap = m_start - series.end() if m_start >= series.end() else series.start() - m_end
             if 0 <= gap <= _ADJACENCY and (best is None or gap < best[0]):
                 best = (gap, _period(match))
     return best[1] if best else None
 
 
-def _read(path: str) -> tuple[str, str, str]:
-    """Se ejecuta en un proceso aislado: título, página 1 y página 2 normalizados."""
+def _read(path: str) -> tuple[str, str, str, str | None, str | None]:
+    """Se ejecuta en un proceso aislado: título, inicio de las páginas 1 y 2, y su periodo."""
     logging.getLogger("pypdf").setLevel(logging.ERROR)
     reader = PdfReader(path, strict=True)
     info = reader.metadata
-    title = _normalize(str(info.title or "") if info is not None else "")
-    pages = [_normalize(page.extract_text() or "") for page in reader.pages[:2]]
-    return title, pages[0] if pages else "", pages[1] if len(pages) > 1 else ""
+    title = _normalize(str(info.title or "") if info is not None else "")[:500]
+    pages = [_normalize(page.extract_text() or "")[:_COVER_CHARS] for page in reader.pages[:2]]
+    first, second = (pages + ["", ""])[:2]
+    return title, first, second, _cover_period(first), _cover_period(second)
 
 
-def identify(path: Path, expected_period: str | None = None) -> Identification:
-    """Deduce el periodo del informe principal o lanza ``ImportFileError`` con el motivo."""
+def identify(
+    path: Path, expected_period: str | None = None, *, display_name: str | None = None
+) -> Identification:
+    """Deduce el periodo del informe principal o lanza ``ImportFileError`` con el motivo.
+
+    ``display_name`` es el nombre que verá la persona (la ruta puede ser una copia temporal).
+    """
     if expected_period is not None and not _PERIOD.fullmatch(expected_period):
         raise ImportFileError("El periodo debe tener la forma AAAA-MM, p. ej. 2025-01.")
     try:
-        title, first, second = run_isolated(_read, str(path), timeout=60, memory_mb=1024)
+        title, first, second, cover_first, cover_second = run_isolated(
+            _read, str(path), timeout=60, memory_mb=1024
+        )
     except IsolationError as exc:
         raise ImportFileError(f"No se pudo leer el PDF para identificarlo: {exc}") from exc
     except (PyPdfError, ValueError, TypeError, OSError) as exc:  # por si falla el arranque
         raise ImportFileError("No se pudo leer el PDF para identificarlo.") from exc
-    name = path.name
+    name = display_name or path.name
     if any(_OTHER_DOCUMENT.search(text) for text in (title, first[:300], second[:300])):
         raise ImportFileError(
             f"«{name}» parece una presentación, anexo, recuadro, comunicado o versión en "
             "inglés, no el informe principal."
         )
-    cover = _cover_period(first) or _cover_period(second)  # a veces la p. 1 es solo imagen
+    cover = cover_first or cover_second  # a veces la p. 1 es solo imagen
     if cover is None:
         raise ImportFileError(
             f"«{name}» no parece un Informe de Política Monetaria: la portada no muestra la "

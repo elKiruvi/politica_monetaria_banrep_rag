@@ -106,7 +106,7 @@ def test_import_identifies_the_private_copy_and_keeps_provenance(tmp_path, monke
 
     real = module.identify
     monkeypatch.setattr(
-        module, "identify", lambda path, period: seen.append(path) or real(path, period)
+        module, "identify", lambda path, period, **kw: seen.append(path) or real(path, period, **kw)
     )
     catalog, client = make_catalog(tmp_path, Source([]), lambda _: pytest.fail())
     path = write(tmp_path)
@@ -311,3 +311,30 @@ def test_reimporting_same_pdf_offline_keeps_verified_metadata(tmp_path):
         first = catalog.import_pdf(path, lookup=lambda _: verified)
         again = catalog.import_pdf(path)
     assert again == first and again["metadata_verified"] is True
+
+
+def test_repeated_cover_text_is_linear(tmp_path):
+    from politica_monetaria_banrep_rag.importer import _cover_period
+
+    hostile = "Informe de Política Monetaria Enero de 2025 " * 20_000
+    started = time.monotonic()
+    assert _cover_period(hostile) == "2025-01"
+    assert time.monotonic() - started < 2
+
+
+def test_errors_name_the_persons_file_not_the_temporary_copy(tmp_path):
+    catalog, client = make_catalog(tmp_path, Source([]), lambda _: pytest.fail())
+    pages = [["Presentación", "INFORME DE POLÍTICA MONETARIA", "Enero de 2025"]]
+    path = write(tmp_path, "mi-presentacion.pdf", pages=pages)
+    with client, pytest.raises(ImportFileError, match="«mi-presentacion.pdf»"):
+        catalog.import_pdf(path)
+
+
+def test_stale_temporary_copies_are_removed(tmp_path):
+    catalog, client = make_catalog(tmp_path, Source([]), lambda _: pytest.fail())
+    stale = catalog.root / "raw" / ".importacion-abandonada.pdf"
+    stale.parent.mkdir(parents=True)
+    stale.write_bytes(b"%PDF-resto")
+    with client:
+        catalog.import_pdf(write(tmp_path))
+    assert not stale.exists()
