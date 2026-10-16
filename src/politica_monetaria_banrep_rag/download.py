@@ -20,10 +20,15 @@ from pypdf import PdfReader
 from pypdf.errors import PyPdfError
 
 from politica_monetaria_banrep_rag.source import ReportRecord, SourceError, _official_url
+from politica_monetaria_banrep_rag.urls import UnsafeUrlError, is_challenge_url, redirect_target
 
 
 class DownloadError(Exception):
     """El documento remoto no pudo validarse; no debe activarse en el catálogo."""
+
+
+class DownloadBlockedError(DownloadError):
+    """La fuente exigió una verificación antibot; el proyecto no la elude."""
 
 
 class _TransientDownloadError(Exception):
@@ -151,9 +156,15 @@ class PdfDownloader:
                         location = response.headers.get("location")
                         if not location:
                             raise DownloadError("Falta el destino de una redirección.")
+                        target = urljoin(url, location)
+                        if is_challenge_url(target):
+                            raise DownloadBlockedError(
+                                "Banrep pidió una verificación antibot (Radware) y no se elude; "
+                                "importe un PDF obtenido legítimamente o reintente más tarde."
+                            )
                         try:
-                            url = _official_url(urljoin(url, location), download=True)
-                        except SourceError as exc:
+                            url = redirect_target(url, location)
+                        except UnsafeUrlError as exc:
                             raise DownloadError(
                                 "La redirección apunta a un destino no autorizado."
                             ) from exc
@@ -165,6 +176,13 @@ class PdfDownloader:
                     if response.status_code != 200:
                         raise DownloadError(f"La fuente devolvió HTTP {response.status_code}.")
                     return self._save(response, report_id, raw_dir, url, deadline)
+            except (httpx.InvalidURL, httpx.UnsupportedProtocol) as exc:
+                raise DownloadError("La fuente devolvió una redirección mal formada.") from exc
+            except httpx.RemoteProtocolError as exc:
+                if "location" in str(exc).lower():
+                    # httpx valida Location aunque no siga redirecciones; no es transitorio.
+                    raise DownloadError("La fuente devolvió una redirección mal formada.") from exc
+                raise _TransientDownloadError() from exc
             except httpx.HTTPError as exc:
                 raise _TransientDownloadError() from exc
         raise DownloadError("Se superó el número de redirecciones autorizadas.")
@@ -176,6 +194,10 @@ class PdfDownloader:
         encoding = response.headers.get("content-encoding", "identity").lower()
         if encoding not in {"identity", "gzip"}:
             raise DownloadError("La compresión HTTP de la respuesta no está admitida.")
+        if mime == "text/html":
+            raise DownloadError(
+                "La fuente devolvió HTML en lugar del PDF (posible verificación antibot)."
+            )
         if mime and mime not in {"application/pdf", "application/octet-stream"}:
             raise DownloadError("La respuesta no declara un documento PDF.")
         try:

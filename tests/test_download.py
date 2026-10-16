@@ -10,7 +10,12 @@ import httpx
 import pytest
 from pypdf import PdfWriter
 
-from politica_monetaria_banrep_rag.download import DownloadError, PdfDownloader, _retry_after
+from politica_monetaria_banrep_rag.download import (
+    DownloadBlockedError,
+    DownloadError,
+    PdfDownloader,
+    _retry_after,
+)
 from politica_monetaria_banrep_rag.source import ReportRecord
 
 
@@ -48,7 +53,9 @@ def test_redirects_to_official_repository_and_saves_atomically(tmp_path, report,
         if request.url.host == "doi.org":
             return httpx.Response(
                 302,
-                headers={"location": "https://repositorio.banrep.gov.co/bitstream/ipm-julio.pdf"},
+                headers={
+                    "location": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11411/IPM-julio-2026.pdf"
+                },
             )
         return httpx.Response(
             200, headers={"content-type": "application/pdf"}, stream=httpx.ByteStream(pdf_bytes)
@@ -60,7 +67,10 @@ def test_redirects_to_official_repository_and_saves_atomically(tmp_path, report,
     assert result.bytes_count == len(pdf_bytes)
     assert result.pages_count == 1
     assert result.path.read_bytes() == pdf_bytes
-    assert result.final_url == "https://repositorio.banrep.gov.co/bitstream/ipm-julio.pdf"
+    assert (
+        result.final_url
+        == "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11411/IPM-julio-2026.pdf"
+    )
     assert len(visited) == 2
     assert list(tmp_path.glob(".descarga-*")) == []
 
@@ -213,7 +223,7 @@ def test_cookie_set_by_doi_is_not_sent_to_repository(tmp_path, report, pdf_bytes
             return httpx.Response(
                 302,
                 headers={
-                    "location": "https://repositorio.banrep.gov.co/informe.pdf",
+                    "location": "https://repositorio.banrep.gov.co/bitstream/handle/20.500.12134/11411/informe.pdf",
                     "set-cookie": "sesion=no-reenviar; Path=/",
                 },
             )
@@ -467,3 +477,117 @@ def test_hashing_existing_file_cannot_succeed_after_deadline(
         with pytest.raises(DownloadError, match="tiempo máximo"):
             PdfDownloader(client, max_seconds=1).download(report, tmp_path)
     assert target.read_bytes() == pdf_bytes
+
+
+def test_doi_handle_bitstream_content_chain_is_followed(tmp_path, report, pdf_bytes):
+    uuid = "7a119fee-bead-43c1-9671-78e3f45ef54a"
+    repo = "https://repositorio.banrep.gov.co"
+    chain = {
+        "https://doi.org/rh7c": "https://doi.org/10.32468/INF-POL-MONT-SPA.TR3-2026",
+        "https://doi.org/10.32468/INF-POL-MONT-SPA.TR3-2026": (
+            f"{repo}/bitstream/handle/20.500.12134/11411/IPM-julio-2026.pdf"
+        ),
+        f"{repo}/bitstream/handle/20.500.12134/11411/IPM-julio-2026.pdf": (
+            f"/bitstreams/{uuid}/download"
+        ),
+        f"{repo}/bitstreams/{uuid}/download": f"/server/api/core/bitstreams/{uuid}/content",
+    }
+    visited = []
+
+    def respond(request):
+        visited.append(str(request.url))
+        if str(request.url) in chain:
+            return httpx.Response(302, headers={"location": chain[str(request.url)]})
+        return httpx.Response(
+            200, headers={"content-type": "application/pdf"}, stream=httpx.ByteStream(pdf_bytes)
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        result = PdfDownloader(client).download(report, tmp_path)
+    assert result.final_url == f"{repo}/server/api/core/bitstreams/{uuid}/content"
+    assert len(visited) == 5
+    assert result.path.read_bytes() == pdf_bytes
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "https://validate.perfdrive.com/?ssa=1&ssc=https%3A%2F%2Frepositorio.banrep.gov.co",
+        "https://otro.perfdrive.com/desafio",
+    ],
+)
+def test_antibot_redirect_is_reported_as_blocked(tmp_path, report, location):
+    def respond(_):
+        return httpx.Response(302, headers={"location": location})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(DownloadBlockedError, match="antibot"):
+            PdfDownloader(client).download(report, tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_html_instead_of_pdf_is_reported(tmp_path, report):
+    def respond(_):
+        return httpx.Response(200, headers={"content-type": "text/html"}, text="<html></html>")
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(DownloadError, match="HTML en lugar del PDF"):
+            PdfDownloader(client).download(report, tmp_path)
+
+
+def test_dspace_content_url_cannot_be_the_starting_point(tmp_path, report):
+    url = "https://repositorio.banrep.gov.co/server/api/core/bitstreams/7a119fee-bead-43c1-9671-78e3f45ef54a/content"
+    forbidden = httpx.Client(
+        transport=httpx.MockTransport(lambda _: pytest.fail("Sin solicitudes"))
+    )
+    with forbidden, pytest.raises(DownloadError, match="no es oficial"):
+        PdfDownloader(forbidden).download(replace(report, download_url=url), tmp_path)
+
+
+@pytest.mark.parametrize(
+    "location",
+    [
+        "https://repositorio.banrep.gov.co/server/api/core/bitstreams/7a119fee-bead-43c1-9671-78e3f45ef54a/content",
+        "https://repositorio.banrep.gov.co/bitstreams/7a119fee-bead-43c1-9671-78e3f45ef54a/download",
+        "https://repositorio.banrep.gov.co/x/../bitstream/handle/20.500.12134/1/IPM.pdf",
+    ],
+)
+def test_doi_cannot_redirect_straight_to_dspace_bitstreams(tmp_path, report, location):
+    visited = []
+
+    def respond(request):
+        visited.append(str(request.url))
+        if request.url.host == "doi.org":
+            return httpx.Response(302, headers={"location": location})
+        return httpx.Response(200, headers={"content-type": "application/pdf"}, content=b"%PDF-")
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(DownloadError, match="no autorizado"):
+            PdfDownloader(client).download(report, tmp_path)
+    assert visited == ["https://doi.org/rh7c"]
+
+
+@pytest.mark.parametrize(
+    "location",
+    ["https://repositorio.banrep.gov.co/a\tb.pdf", "https://[::1/x.pdf", "https://doi.org:99999/x"],
+)
+def test_malformed_location_is_permanent_not_retried(tmp_path, report, location):
+    calls = []
+
+    def respond(request):
+        calls.append(request)
+        return httpx.Response(302, headers={"location": location})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(DownloadError, match="redirección mal formada|no autorizado"):
+            PdfDownloader(client).download(report, tmp_path)
+    assert len(calls) == 1
+
+
+def test_challenge_host_with_trailing_dot_is_blocked(tmp_path, report):
+    def respond(_):
+        return httpx.Response(302, headers={"location": "https://validate.perfdrive.com./x"})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(DownloadBlockedError):
+            PdfDownloader(client).download(report, tmp_path)

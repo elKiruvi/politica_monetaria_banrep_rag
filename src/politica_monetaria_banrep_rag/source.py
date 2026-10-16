@@ -9,6 +9,13 @@ from urllib.parse import unquote, urljoin, urlsplit
 import httpx
 from bs4 import BeautifulSoup, Tag
 
+from politica_monetaria_banrep_rag.urls import (
+    UnsafeUrlError,
+    download_start_url,
+    is_challenge_url,
+    page_url,
+)
+
 HISTORY_URL = (
     "https://www.banrep.gov.co/es/publicaciones-investigaciones/"
     "informe-politica-monetaria/historico-informes"
@@ -40,6 +47,10 @@ class SourceError(Exception):
     """La fuente no permite verificar con certeza la ventana solicitada."""
 
 
+class SourceBlockedError(SourceError):
+    """La fuente exigió una verificación antibot; el proyecto no la elude."""
+
+
 def _safe_text(value: str) -> str:
     if any(unicodedata.category(char) in {"Cc", "Cf"} for char in value):
         raise SourceError("La fuente incluyó caracteres de control en un título o enlace.")
@@ -66,34 +77,24 @@ class ReportRecord:
 
 def _official_url(href: str, *, download: bool = False) -> str:
     _safe_text(href)
-    raw = urlsplit(href)
+    try:
+        raw = urlsplit(href)
+    except ValueError as exc:
+        raise SourceError("La fuente proporcionó una URL que no se puede interpretar.") from exc
+    # urljoin normaliza «..»; por eso la ruta original se revisa antes de unirla.
     if not raw.path or any(part in {".", ".."} for part in unquote(raw.path).split("/")):
         raise SourceError("La fuente proporcionó una ruta vacía o ambigua.")
     url = urljoin(HISTORY_URL, href)
-    parts = urlsplit(url)
-    allowed = {"www.banrep.gov.co", "banrep.gov.co"}
-    if download:
-        allowed |= {"doi.org", "repositorio.banrep.gov.co"}
-    if parts.scheme != "https" or parts.hostname not in allowed or parts.username or parts.password:
-        raise SourceError("La fuente proporcionó una URL fuera de los dominios autorizados.")
     try:
-        invalid_port = parts.port is not None
-    except ValueError as exc:
-        raise SourceError("La fuente proporcionó un puerto no válido.") from exc
-    if not parts.path or invalid_port:
-        raise SourceError("La fuente proporcionó una URL no válida.")
-    if download and not (
-        (parts.hostname == "doi.org" and parts.path.strip("/"))
-        or (parts.hostname != "doi.org" and parts.path.lower().endswith(".pdf"))
-    ):
-        raise SourceError("La descarga principal no apunta a un DOI ni a un archivo PDF.")
-    return url
+        return download_start_url(url) if download else page_url(url)
+    except UnsafeUrlError as exc:
+        raise SourceError(f"La fuente proporcionó una URL no autorizada: {exc}") from exc
 
 
 def parse_history(html: str, checked_at: str) -> list[ReportRecord]:
     """Acepta solo filas de informe principal con periodo y descarga inequívocos."""
     if "Radware Bot Manager Block" in html:
-        raise SourceError("Banrep bloqueó la consulta; no se puede verificar el histórico.")
+        raise SourceBlockedError("Banrep bloqueó la consulta; no se puede verificar el histórico.")
     soup = BeautifulSoup(html, "html.parser")
     view = soup.select_one(".view-publicaciones-buscador")
     if view is None:
@@ -184,6 +185,10 @@ class BanrepSource:
             )
         except httpx.HTTPError as exc:
             raise SourceError("No se pudo consultar el histórico oficial.") from exc
+        if response.is_redirect and is_challenge_url(response.headers.get("location", "")):
+            raise SourceBlockedError(
+                "Banrep pidió una verificación antibot (Radware); no se elude ese control."
+            )
         if (
             response.url.scheme != "https"
             or response.url.host not in {"www.banrep.gov.co", "banrep.gov.co"}
