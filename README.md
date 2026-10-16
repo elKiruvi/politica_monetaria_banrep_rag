@@ -15,6 +15,10 @@ uv run --frozen pytest -q
 uv run --frozen ruff check .
 ```
 
+## Descubrimiento experimental
+
+`uv run --frozen banrep-rag descubrir --max-reports 12` intenta localizar los doce informes principales en español. `--json` emite metadatos; `BANREP_MAX_REPORTS` cambia el valor predeterminado. Si el histórico bloquea las solicitudes, el comando sale con código 1 y **no** crea ni actualiza ningún índice. Se verificó la clasificación de los dos informes de la portada del HTML oficial, pero la paginación no fue accesible desde este entorno. No se debe interpretar esa muestra como un corpus de doce informes.
+
 El diagnóstico de investigación, incluido el bloqueo de las consultas paginadas a la fuente, está en [docs/arquitectura/diagnostico_inicial.md](docs/arquitectura/diagnostico_inicial.md). Las entregas pendientes se describen en los issues. No se exige ningún proveedor comercial para instalar la base.
 
 ## Derechos
