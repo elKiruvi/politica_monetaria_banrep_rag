@@ -14,7 +14,7 @@ from politica_monetaria_banrep_rag.layout import PARSER_VERSION, Block, PageLayo
 from politica_monetaria_banrep_rag.tables import Table, TableError, build_tables
 
 PROCESSING_VERSION = f"{PARSER_VERSION}+unidades-1"
-_EXCLUDED = {"toc", "running_header", "page_number", "chart_residue"}
+_EXCLUDED = {"toc", "running_header", "page_number", "chart_residue", "small_text"}
 _CHART_NOTE = "Los datos del gráfico no se extraen (fuera de alcance); solo su título y fuente."
 
 
@@ -58,20 +58,29 @@ class ProcessedDocument:
 
 
 def _region_units(
-    blocks: list[Block], page: PageLayout, section: tuple[str, ...]
-) -> tuple[list[Unit], int, list[tuple[int, str, str]]]:
-    caption = next((b for b in blocks if b.kind == "caption"), None)
+    blocks: list[Block], page: PageLayout, section: tuple[str, ...], previous_table: str | None
+) -> tuple[list[Unit], int, list[tuple[int, str, str]], str | None]:
+    """Unidades de un gráfico o cuadro; nunca descarta su texto.
+
+    Un cuadro sin leyenda en su página (p. ej. la segunda página de un anexo) se titula como
+    continuación del último cuadro; si no lo hay, «Cuadro sin título (página N)».
+    """
+    caption_block = next((b for b in blocks if b.kind == "caption"), None)
     notes = [b.text for b in blocks if b.kind == "source_note"]
     cells = [b for b in blocks if b.kind == "table_cell"]
-    if caption is None:
-        return [], 0, []
+    if caption_block is not None:
+        caption = caption_block.text
+    elif previous_table:
+        caption = f"{previous_table.split(' (continuación)')[0]} (continuación)"
+    else:
+        caption = f"Cuadro sin título (página {page.number})"
     if not cells:  # gráfico: título, subtítulos de panel y fuentes
         panels = [b.text for b in blocks if b.kind == "chart_panel"]
-        text = " ".join([caption.text, *panels, *notes, _CHART_NOTE])
-        return [Unit("chart_caption", text, page.number, page.label, section)], 0, []
+        text = " ".join([caption, *panels, *notes, _CHART_NOTE])
+        return [Unit("chart_caption", text, page.number, page.label, section)], 0, [], None
     lines = [line for block in cells for line in block.lines]
     try:
-        tables = build_tables(caption.text, page.number, lines, notes)
+        tables = build_tables(caption, page.number, lines, notes)
     except TableError as exc:
         rows: dict[float, list[tuple[float, str]]] = {}
         for line in lines:
@@ -79,14 +88,12 @@ def _region_units(
             rows.setdefault(key, []).append((line.bbox[0], line.text))
         body = [" | ".join(text for _, text in sorted(rows[y])) for y in sorted(rows, reverse=True)]
         text = "\n".join(
-            [f"{caption.text} (cuadro no reconstruido: el texto se muestra sin columnas)"]
-            + body
-            + notes
+            [f"{caption} (cuadro no reconstruido: el texto se muestra sin columnas)"] + body + notes
         )
-        failure = (page.number, caption.text[:120], str(exc))
-        return [Unit("table_raw", text, page.number, page.label, section)], 0, [failure]
+        failure = (page.number, caption[:120], str(exc))
+        return [Unit("table_raw", text, page.number, page.label, section)], 0, [failure], caption
     units = [Unit("table", t.to_text(), page.number, page.label, section, t) for t in tables]
-    return units, len(tables), []
+    return units, len(tables), [], caption
 
 
 def _last_paragraph(units: list[Unit], section: tuple[str, ...]) -> int | None:
@@ -130,6 +137,8 @@ def process_pdf(path: Path, report_id: str, sha256: str) -> ProcessedDocument:
     failed: list[tuple[int, str, str]] = []
     reconstructed = 0
     stack: list[tuple[int, str]] = []
+    in_box = False  # dentro de un «Recuadro»: sus subtítulos «1.», «2.» cuelgan de él
+    previous_table: str | None = None
     pages_with_text = 0
     for page in layout.pages:
         if any(b.kind not in _EXCLUDED for b in page.blocks):
@@ -143,24 +152,37 @@ def process_pdf(path: Path, report_id: str, sha256: str) -> ProcessedDocument:
             if block.kind in _EXCLUDED:
                 excluded[block.kind] += 1
                 continue
-            if block.kind == "heading" or (
-                block.kind == "caption" and block.text.startswith("Recuadro")
-            ):
+            if block.kind == "caption" and block.text.startswith("Recuadro"):
+                stack, in_box = [(1, block.text)], True
+                continue
+            if block.kind == "heading":
                 level = block.level or 1
+                if block.size >= 13 or (in_box and level >= 2):
+                    in_box = False  # nuevo capítulo o subsección numerada del texto principal
+                elif in_box:
+                    level += 1
                 stack = [(lvl, title) for lvl, title in stack if lvl < level] + [
                     (level, block.text)
                 ]
                 continue
-            section = tuple(title for _, title in stack)
             if block.region is not None:
                 if block.region in done:
                     continue
                 done.add(block.region)
-                region_units, ok, failures = _region_units(regions[block.region], page, section)
+                region = regions[block.region]
+                caption = next((b.text for b in region if b.kind == "caption"), "")
+                if caption.startswith("Anexo"):
+                    stack, in_box = [(1, caption.split(" (continuación)")[0])], False
+                section = tuple(title for _, title in stack)
+                region_units, ok, failures, table_caption = _region_units(
+                    region, page, section, previous_table
+                )
                 units += region_units
                 reconstructed += ok
                 failed += failures
+                previous_table = table_caption or previous_table
                 continue
+            section = tuple(title for _, title in stack)
             if block.kind in {"paragraph", "footnote", "caption", "source_note"}:
                 kind = "footnote" if block.kind == "footnote" else "paragraph"
                 previous = _last_paragraph(units, section)

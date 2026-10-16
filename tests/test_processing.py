@@ -159,3 +159,91 @@ def test_dense_annex_table_and_table_of_contents(tmp_path):
     )
     fx = next(row for row in table.rows if row.labels[0] == "Tasa de cambio")
     assert "2023: 4.325" in table.row_text(fx)
+
+
+def test_annex_page_without_title_is_kept_as_continuation(tmp_path):
+    path = tmp_path / "anexo-continuacion.pdf"
+    path.write_bytes(make_layout_pdf([annex_page(), annex_page()[1:]]))
+    document = process_pdf(path, "ipm-2025-10", "0" * 64)
+    tables = [u for u in document.units if u.kind in {"table", "table_raw"}]
+    assert [u.page for u in tables] == [1, 2]
+    assert tables[1].text.startswith("Anexo 2 Principales variables del pronóstico (continuación)")
+    assert tables[1].section == ("Anexo 2 Principales variables del pronóstico",)
+    assert "5,1 (proyección o supuesto)" in tables[1].text
+
+
+def test_isolated_dense_table_without_any_title_is_not_lost(tmp_path):
+    path = tmp_path / "sin-titulo.pdf"
+    path.write_bytes(make_layout_pdf([annex_page()[1:]]))
+    document = process_pdf(path, "ipm-2025-10", "0" * 64)
+    (table,) = [u for u in document.units if u.kind in {"table", "table_raw"}]
+    assert table.text.startswith("Cuadro sin título (página 1)")
+
+
+def test_box_subsections_hang_from_the_box(tmp_path):
+    path = tmp_path / "recuadro.pdf"
+    items = [
+        (57, 760, 20, "3. Situación económica actual", "B"),
+        (291, 720, 9, "Recuadro 1 Un indicador de demanda", "R"),
+        (291, 700, 10, "1. Introducción", "B"),
+        (291, 680, 10, "El indicador resume la demanda interna de corto plazo.", "R"),
+        (291, 650, 10, "2. Metodología", "B"),
+        (291, 630, 10, "Se estima con un modelo de factores dinámicos.", "R"),
+        (57, 300, 20, "4. Decisiones de política", "B"),
+        (291, 260, 10, "La Junta redujo la tasa de interés.", "R"),
+    ]
+    path.write_bytes(make_layout_pdf([items]))
+    sections = {u.text[:15]: u.section for u in process_pdf(path, "ipm-2025-10", "0" * 64).units}
+    assert sections["El indicador re"] == ("Recuadro 1 Un indicador de demanda", "1. Introducción")
+    assert sections["Se estima con u"] == ("Recuadro 1 Un indicador de demanda", "2. Metodología")
+    assert sections["La Junta redujo"] == ("4. Decisiones de política",)
+
+
+def test_long_table_notes_get_their_own_chunk():
+    notes = ("d/ Los valores positivos representan déficit y los negativos superávit. " * 12,)
+    rows = (Row(("Déficit fiscal",), (Cell("5,1", False),)),)
+    table = Table("Anexo 1 Proyecciones", 46, "", ("Concepto",), ("2025",), rows, notes, False)
+    unit = Unit("table", table.to_text(), 46, "47", ("Anexo 1",), table)
+    chunks = chunk_document(make_document([unit]), max_chars=600)
+    assert "notas completas aparte" in chunks[0].text
+    notes_chunks = [c for c in chunks if c.kind == "table_notes"]
+    assert notes_chunks and notes_chunks[0].text.startswith("Anexo 1 Proyecciones — notas:")
+    joined = " ".join(c.text for c in notes_chunks)
+    assert joined.count("superávit") == 12
+
+
+def test_sentences_are_not_cut_after_abbreviations():
+    from politica_monetaria_banrep_rag.chunking import _split_long
+
+    text = "Hay choques, p. ej. La sequía. " + "Otra oración larga sobre la inflación. " * 30
+    pieces = _split_long(text, 200)
+    assert pieces[0].startswith("Hay choques, p. ej. La sequía.")
+
+
+def test_store_keeps_good_reports_when_one_fails_and_refreshes_metadata(tmp_path):
+    from test_importer import write
+
+    from politica_monetaria_banrep_rag.catalog import Catalog
+    from politica_monetaria_banrep_rag.processed_store import ProcessedStore
+
+    data = tmp_path / "datos"
+    monkey_catalog = Catalog(data, None, None)  # type: ignore[arg-type]
+    monkey_catalog.import_pdf(write(tmp_path))
+    monkey_catalog.activate_imports()
+    records = monkey_catalog.current()[1]["reports"]
+    broken = json.loads(json.dumps(records[0]))
+    broken["report"]["report_id"] = "ipm-2025-04"
+    broken["pdf"]["sha256"] = "f" * 64  # el archivo no coincide con este hash
+    store = ProcessedStore(data)
+    summaries, failures = store.ensure(records + [broken])
+    assert [s.report_id for s in summaries] == ["ipm-2025-01"]
+    assert failures == [("ipm-2025-04", "el PDF local no coincide con su hash")]
+    renamed = json.loads(json.dumps(records))
+    renamed[0]["report"]["title"] = "Título corregido"
+    summaries, failures = store.ensure(renamed)
+    assert summaries[0].cached and not failures
+    stored = json.loads(summaries[0].path.read_text())
+    assert stored["report"]["title"] == "Título corregido"
+    summaries[0].path.write_text("{truncado")
+    summaries, failures = store.ensure(records)
+    assert not summaries[0].cached and not failures

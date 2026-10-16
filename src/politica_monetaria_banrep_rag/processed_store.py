@@ -11,6 +11,7 @@ import re
 from collections.abc import Callable
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
+from importlib import metadata
 from pathlib import Path
 
 from politica_monetaria_banrep_rag.catalog import CatalogError, _atomic_write, _json_bytes
@@ -35,10 +36,6 @@ class ProcessedSummary:
     cached: bool
 
 
-class ProcessingError(Exception):
-    """Un informe del catálogo no se pudo procesar; el resto del corpus no cambia."""
-
-
 def _work(args: tuple[str, str, str, int]) -> bytes:
     """Procesa un PDF en un proceso aparte y devuelve el JSON serializado (sin metadatos)."""
     pdf, report_id, sha256, max_chars = args
@@ -59,13 +56,26 @@ class ProcessedStore:
     def __init__(self, root: Path, *, max_chars: int = 1400) -> None:
         self.root = root
         self.max_chars = max_chars
-        signature = f"{PROCESSING_VERSION}|{CHUNKER_VERSION}|{max_chars}"
+        signature = (
+            f"{PROCESSING_VERSION}|{CHUNKER_VERSION}|{max_chars}|"
+            f"pdfminer={metadata.version('pdfminer.six')}"
+        )
         self.version = hashlib.sha256(signature.encode()).hexdigest()[:12]
 
     def path_for(self, report_id: str, sha256: str) -> Path:
         if not re.fullmatch(r"ipm-\d{4}-\d{2}", report_id) or not _SHA.fullmatch(sha256):
             raise CatalogError("Identificador o hash no válido para un documento procesado.")
         return self.root / "processed" / f"{report_id}-{sha256[:16]}-{self.version}.json"
+
+    def _load(self, target: Path) -> dict[str, object] | None:
+        """Lee un resultado en caché; un archivo dañado se trata como ausente."""
+        try:
+            data = json.loads(target.read_bytes())
+        except (OSError, ValueError):
+            return None
+        if not isinstance(data, dict) or not {"document", "chunks", "report", "pdf"} <= set(data):
+            return None
+        return data
 
     def ensure(
         self,
@@ -74,65 +84,92 @@ class ProcessedStore:
         force: bool = False,
         workers: int = 1,
         progress: Callable[[str], None] | None = None,
-    ) -> list[ProcessedSummary]:
-        """Procesa los informes del snapshot que no estén en caché y devuelve un resumen."""
+    ) -> tuple[list[ProcessedSummary], list[tuple[str, str]]]:
+        """Procesa lo que falte y devuelve (resúmenes, fallos por informe).
+
+        Cada resultado se guarda en cuanto termina; un informe que falla no impide procesar ni
+        conservar los demás. Si cambian los metadatos del snapshot, se actualizan sin reprocesar.
+        """
         notify = progress or (lambda _: None)
         pending: list[tuple[dict[str, object], Path, tuple[str, str, str, int]]] = []
+        failures: list[tuple[str, str]] = []
         for record in records:
             report, pdf = record["report"], record["pdf"]
             assert isinstance(report, dict) and isinstance(pdf, dict)
             report_id, sha256 = str(report["report_id"]), str(pdf["sha256"])
             target = self.path_for(report_id, sha256)
+            cached = None if force else self._load(target)
+            if cached is not None:
+                if cached["report"] != report or cached["pdf"] != pdf:
+                    cached["report"], cached["pdf"] = report, pdf
+                    _atomic_write(target, _json_bytes(cached))
+                continue
             source = self.root / str(pdf["path"])
-            if force or not target.exists():
-                if not source.is_file():
-                    raise CatalogError(f"Falta el PDF de {report_id} en el almacén local.")
-                pending.append((record, target, (str(source), report_id, sha256, self.max_chars)))
+            if not source.is_file():
+                failures.append((report_id, "falta el PDF en el almacén local"))
+                continue
+            with source.open("rb") as handle:
+                if hashlib.file_digest(handle, "sha256").hexdigest() != sha256:
+                    failures.append((report_id, "el PDF local no coincide con su hash"))
+                    continue
+            pending.append((record, target, (str(source), report_id, sha256, self.max_chars)))
         if pending:
             notify(f"Procesando {len(pending)} informe(s); cada uno puede tardar unos segundos…")
-        results: dict[Path, bytes] = {}
 
         def run(item: tuple[dict[str, object], Path, tuple[str, str, str, int]]) -> None:
             record, target, job = item
             notify(f"Procesando {job_id(record)}…")
             try:
                 # Proceso aislado: un PDF hostil no puede colgar ni agotar la memoria.
-                results[target] = run_isolated(_work, job, timeout=900, memory_mb=3072)
+                data = run_isolated(_work, job, timeout=900, memory_mb=3072)
             except IsolationError as exc:
-                raise ProcessingError(f"No se pudo procesar {job_id(record)}: {exc}") from exc
-            notify(f"Procesado {job_id(record)}.")
-
-        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-            list(pool.map(run, pending))
-        for record, target, _ in pending:
-            payload = json.loads(results[target])
+                failures.append((job_id(record), str(exc)))
+                notify(f"No se pudo procesar {job_id(record)}: {exc}")
+                return
+            payload = json.loads(data)
             payload["report"] = record["report"]
             payload["pdf"] = record["pdf"]
             payload["versions"] = {
                 "processing": PROCESSING_VERSION,
                 "chunker": CHUNKER_VERSION,
                 "max_chars": self.max_chars,
+                "pdfminer": metadata.version("pdfminer.six"),
             }
             _atomic_write(target, _json_bytes(payload))
+            notify(f"Procesado {job_id(record)}.")
+
+        with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
+            list(pool.map(run, pending))
+        fresh = {target for _, target, _ in pending}
         summaries = []
+        failed = {report_id for report_id, _ in failures}
         for record in records:
             report, pdf = record["report"], record["pdf"]
             assert isinstance(report, dict) and isinstance(pdf, dict)
+            if str(report["report_id"]) in failed:
+                continue
             target = self.path_for(str(report["report_id"]), str(pdf["sha256"]))
-            data = json.loads(target.read_bytes())
-            quality = data["document"]["quality"]
+            data = self._load(target)
+            if data is None:
+                failures.append((str(report["report_id"]), "el resultado guardado no es legible"))
+                continue
+            document = data["document"]
+            assert isinstance(document, dict)
+            quality = document["quality"]
+            chunks = data["chunks"]
+            assert isinstance(quality, dict) and isinstance(chunks, list)
             summaries.append(
                 ProcessedSummary(
                     report_id=str(report["report_id"]),
                     path=target,
                     pages=quality["pages"],
-                    chunks=len(data["chunks"]),
+                    chunks=len(chunks),
                     tables=quality["tables_reconstructed"],
                     tables_failed=len(quality["tables_failed"]),
                     ligatures_repaired=quality["ligatures_repaired"],
                     degraded=quality["degraded"],
                     warnings=tuple(quality["warnings"]),
-                    cached=target not in results,
+                    cached=target not in fresh,
                 )
             )
-        return summaries
+        return summaries, failures

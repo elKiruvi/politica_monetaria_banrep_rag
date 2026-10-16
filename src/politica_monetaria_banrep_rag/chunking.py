@@ -11,9 +11,10 @@ from dataclasses import asdict, dataclass
 
 from politica_monetaria_banrep_rag.processing import ProcessedDocument, Unit
 
-CHUNKER_VERSION = "secciones-1"
-# Corte de oración: fin de oración y mayúscula; no corta «p. ej.» ni «3,5 %».
-_SENTENCE = re.compile(r"(?<=[^\s.]{2}[.!?])\s+(?=[A-ZÁÉÍÓÚÑ¿¡(«])")
+CHUNKER_VERSION = "secciones-2"
+_NOTES_IN_TABLE = 400
+# Corte de oración: fin de oración y mayúscula; no corta «p. ej.», «EE. UU.» ni «3,5 %».
+_SENTENCE = re.compile(r"(?<=[^\s.]{3}[.!?])\s+(?=[A-ZÁÉÍÓÚÑ¿¡(«])")
 
 
 @dataclass(frozen=True)
@@ -61,8 +62,8 @@ def _table_parts(unit: Unit, max_chars: int) -> list[str]:
     assert table is not None
     header = table.header_text()
     notes = " ".join(table.notes)
-    if len(notes) > 400:
-        notes = notes[:400].rsplit(" ", 1)[0] + " […]"
+    if len(notes) > _NOTES_IN_TABLE:
+        notes = notes[:_NOTES_IN_TABLE].rsplit(" ", 1)[0] + " […] (notas completas aparte)"
     parts: list[str] = []
     rows: list[str] = []
     for row in table.rows:
@@ -107,6 +108,12 @@ def chunk_document(document: ProcessedDocument, *, max_chars: int = 1400) -> lis
         if unit.kind == "table":
             for part in _table_parts(unit, max_chars):
                 drafts.append(("table", unit.section, [unit], part))
+            assert unit.table is not None
+            notes = " ".join(unit.table.notes)
+            if len(notes) > _NOTES_IN_TABLE:
+                # Las notas completas (signos, definiciones) no caben en cada fragmento del cuadro.
+                for piece in _split_long(f"{unit.table.caption} — notas: {notes}", max_chars):
+                    drafts.append(("table_notes", unit.section, [unit], piece))
         else:
             for piece in _split_long(unit.text, max_chars):
                 drafts.append((unit.kind, unit.section, [unit], piece))

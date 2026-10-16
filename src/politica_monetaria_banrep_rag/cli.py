@@ -13,7 +13,7 @@ from politica_monetaria_banrep_rag.crossref import CrossrefReportSource
 from politica_monetaria_banrep_rag.download import DownloadError, PdfDownloader
 from politica_monetaria_banrep_rag.importer import ImportFileError
 from politica_monetaria_banrep_rag.layout import LayoutError
-from politica_monetaria_banrep_rag.processed_store import ProcessedStore, ProcessingError
+from politica_monetaria_banrep_rag.processed_store import ProcessedStore
 from politica_monetaria_banrep_rag.source import BanrepSource, ReportSource, SourceError
 
 SOURCES = ("crossref", "historico")
@@ -137,13 +137,13 @@ def _process(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         records = active[1]["reports"]
         assert isinstance(records, list)
         store = ProcessedStore(root)
-        summaries = store.ensure(
+        summaries, failures = store.ensure(
             records,
             force=args.forzar,
             workers=args.procesos,
             progress=lambda text: print(text, file=sys.stderr),
         )
-    except (LayoutError, ProcessingError) as exc:
+    except LayoutError as exc:
         parser.exit(1, f"Error de procesamiento: {exc}\n")
     except OSError as exc:
         parser.exit(1, f"Error de procesamiento: {_local_failure(exc)}\n")
@@ -152,6 +152,8 @@ def _process(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     if args.json:
         rows = [{**s.__dict__, "path": str(s.path)} for s in summaries]
         print(json.dumps(rows, ensure_ascii=False, indent=2))
+        if failures:
+            parser.exit(1, "".join(f"Error: {r}: {why}\n" for r, why in failures))
         return
     for s in summaries:
         state = "degradado: " + " ".join(s.warnings) if s.degraded else "calidad aceptable"
@@ -160,6 +162,12 @@ def _process(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             f"{s.report_id} — {s.pages} págs., {s.chunks} fragmentos, {s.tables} cuadros "
             f"({s.tables_failed} sin reconstruir), {s.ligatures_repaired} ligaduras reparadas; "
             f"{state} ({origin})"
+        )
+    if failures:
+        parser.exit(
+            1,
+            "".join(f"Error de procesamiento en {r}: {why}\n" for r, why in failures)
+            + "Los demás informes se procesaron y quedaron guardados.\n",
         )
 
 

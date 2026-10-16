@@ -12,20 +12,22 @@
 - **Ligaduras:** algunos PDF declaran los glifos «fi»/«fl» como «f» en su ToUnicode («Gráfco», «infación»). Se detectan por su anchura normalizada frente a la «f» habitual de la misma fuente (en Fira Sans: «f» ≈ 0,332; «fi» ≈ 0,572; «fl» ≈ 0,590). Con dos grupos, el estrecho es «fi» y el ancho «fl»; con un solo grupo no se repara y se cuenta como no resuelto.
 - **Unidades y fragmentos:** cada unidad guarda la página del PDF (1-indexada, la que sirve para `#page=N`), la página impresa y la ruta de secciones; los párrafos que siguen en la página siguiente se unen y conservan el rango. Los fragmentos (`max_chars` = 1 400) nunca mezclan informes ni secciones, se cortan en fin de oración y los de cuadros repiten título, columnas y notas (recortadas a 400 caracteres). `chunk_id` depende del informe, el hash del PDF, las versiones del procesamiento y del fragmentador, la posición y el texto.
 - **Aislamiento:** cada PDF se analiza en un proceso hijo con 15 minutos y 3 GB como máximo (identificación de importaciones: 60 s y 1 GB). Un PDF hostil no bloquea ni agota el equipo.
-- **Caché:** `processed/<informe>-<hash>-<versión>.json` con unidades, informe de calidad, fragmentos y metadatos del snapshot. Mismo PDF y mismas versiones = sin trabajo.
+- **Caché:** `processed/<informe>-<hash>-<versión>.json` con unidades, informe de calidad, fragmentos y metadatos del snapshot; la versión incluye la de pdfminer. Mismo PDF y mismas versiones = sin trabajo; se verifica el SHA-256 del PDF antes de procesarlo, un JSON dañado se reprocesa, los metadatos del snapshot se actualizan sin reprocesar y un informe que falla no impide guardar los demás.
 - **Informe de calidad:** páginas con texto, caracteres, unidades por tipo, bloques excluidos por tipo, cuadros reconstruidos y fallidos (con motivo), ligaduras reparadas y sin resolver. Un documento se marca **degradado** si menos del 80 % de las páginas tienen texto, si tiene muy poco texto, más de 50 ligaduras sin resolver o más de la mitad de los cuadros sin reconstruir.
 
 ## Evidencia (5 PDF reales, enero de 2025 a enero de 2026; `banrep-rag procesar`, 3 procesos)
 
-| Informe | Págs. | Fragmentos | Cuadros reconstruidos | Sin reconstruir | Ligaduras reparadas | Calidad |
+| Informe | Págs. | Fragmentos | Cuadros reconstruidos | Sin reconstruir (texto conservado) | Ligaduras reparadas | Calidad |
 |---|---|---|---|---|---|---|
-| 2026-01 | 54 | 387 | 6 | 0 | 0 | aceptable |
-| 2025-10 | 51 | 409 | 6 | 0 | 0 | aceptable |
-| 2025-07 | 54 | 404 | 6 | 0 | 0 | aceptable |
-| 2025-04 | 56 | 362 | 6 | 0 | 490 | aceptable |
-| 2025-01 | 61 | 576 | 6 | 6–7 (recuadros) | 486 | degradado |
+| 2026-01 | 54 | 388 | 7 | 2 (regiones sin leyenda, pp. 41–42) | 0 | aceptable |
+| 2025-10 | 51 | 389 | 7 | 0 | 0 | aceptable |
+| 2025-07 | 54 | 388 | 7 | 0 | 0 | aceptable |
+| 2025-04 | 56 | 326 | 6 | 1 (anexo trimestral, continuación) | 593 (3 sin resolver) | aceptable |
+| 2025-01 | 61 | 427 | 6 | 7 (recuadros y anexo trimestral) | 650 (3 sin resolver) | degradado |
 
-En los cinco se reconstruyen el Cuadro 2.1, el Cuadro 3.1, el Anexo 1 (dos subtablas) y el Anexo 2 (anual y trimestral). Los fallos de enero de 2025 son cuadros de recuadros (textuales, kernel, literatura): quedan como texto sin columnas. Tiempo total: unos 31 s en un equipo de 12 núcleos.
+**Verificación independiente con pypdf:** cada fila de cada cuadro reconstruido se busca en el texto de pypdf con la misma etiqueta y las cifras en el mismo orden (o con paso constante, porque pypdf a veces lee los anexos por columnas): 236/236 (julio y octubre de 2025), 239/239 (enero de 2026) y 170/172 (enero y abril de 2025; las 2 restantes coinciden con las mismas filas históricas de los otros informes). Cobertura de palabras de pypdf en las unidades: 0,94–0,97; lo ausente son ejes y leyendas de gráficos, fragmentos de palabras partidas por guion que aquí se unen y las formas rotas de ligaduras que aquí se reparan. En los cinco se reconstruyen el Cuadro 2.1, el Cuadro 3.1, el Anexo 1 (dos subtablas) y el Anexo 2 (anual y trimestral; su página de continuación sin título se conserva como «(continuación)»). Tiempo total: unos 30 s en un equipo de 12 núcleos.
+
+**Revisión independiente:** encontró que la página de continuación del anexo trimestral se perdía en silencio (corregido: una región sin leyenda nunca se descarta), recuadros sin nombre en la ruta de secciones, notas de cuadros recortadas sin otro fragmento (ahora `table_notes`), procesamiento todo o nada (ahora por informe), ligaduras sin contar en fuentes donde la ligadura es más frecuente que la «f» (ahora la referencia es la «f» más estrecha) y orden de lectura del resumen (ahora por altura, intercalando columnas).
 
 ## Límites y riesgos
 
