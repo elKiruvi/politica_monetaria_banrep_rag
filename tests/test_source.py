@@ -59,8 +59,15 @@ def test_only_main_report_and_separate_dates():
         history(row("Informe de Política Monetaria - julio de 2026", "/es/x", "#")),
         history(row("Informe de Política Monetaria - julio de 2026", "/es/x", "/")),
         history(
+            row("Informe de Política Monetaria - julio de 2026", "/es/x", "https://doi.org/../")
+        ),
+        history(
+            row("Informe de Política Monetaria - julio de 2026", "/es/x", "https://doi.org/%2e%2e/")
+        ),
+        history(
             row("Informe de Política Monetaria - julio de 2026", "/es/x", "https://doi.org:bad/x")
         ),
+        history(row("Informe de Política Monetaria - julio de 2026", "#", "https://doi.org/x")),
         history(
             row("Informe de Política Monetaria (IPM) julio de 2026", "/es/x", "https://doi.org/x")
         ),

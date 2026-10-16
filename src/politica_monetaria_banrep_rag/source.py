@@ -3,7 +3,7 @@
 import re
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import unquote, urljoin, urlsplit
 
 import httpx
 from bs4 import BeautifulSoup, Tag
@@ -58,6 +58,9 @@ class ReportRecord:
 
 
 def _official_url(href: str, *, download: bool = False) -> str:
+    raw = urlsplit(href)
+    if not raw.path or any(part in {".", ".."} for part in unquote(raw.path).split("/")):
+        raise SourceError("La fuente proporcionó una ruta vacía o ambigua.")
     url = urljoin(HISTORY_URL, href)
     parts = urlsplit(url)
     allowed = {"www.banrep.gov.co", "banrep.gov.co"}
