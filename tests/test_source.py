@@ -3,8 +3,6 @@ import pytest
 
 from politica_monetaria_banrep_rag.source import BanrepSource, SourceError, parse_history
 
-ROOT = "https://www.banrep.gov.co"
-
 
 def history(rows: str, heading: str = "2026 - julio") -> str:
     return f'<div class="view-publicaciones-buscador"><h3>{heading}</h3>{rows}</div>'
@@ -69,6 +67,24 @@ def test_only_main_report_and_separate_dates():
         ),
         history(row("Informe de Política Monetaria - julio de 2026", "#", "https://doi.org/x")),
         history(
+            row(
+                "Informe de Política Monetaria - julio de 2026",
+                "/es/x",
+                "https://doi.org/x\x1b[31m",
+            )
+        ),
+        history(
+            row(
+                "Informe de Política Monetaria - julio de 2026\x1b[31m",
+                "/es/x",
+                "https://doi.org/x",
+            )
+        ),
+        history(
+            '<div class="views-row"><div class="titulo">'
+            "<p>Informe de Política Monetaria - julio de 2026</p></div></div>"
+        ),
+        history(
             row("Informe de Política Monetaria (IPM) julio de 2026", "/es/x", "https://doi.org/x")
         ),
     ],
@@ -90,6 +106,43 @@ def test_latest_n_across_pages_without_complementary_material():
     assert [r.report_id for r in reports] == ["ipm-2026-07", "ipm-2026-04"]
 
 
+def test_latest_n_sorts_and_caps_more_than_n_on_a_page():
+    html = (
+        history(april(), "2026 - abril")
+        + history(july())
+        + history(
+            row(
+                "Informe de Política Monetaria - enero de 2026",
+                "/es/informe/enero",
+                "https://doi.org/enero",
+            ),
+            "2026 - enero",
+        )
+    )
+    html = html.replace('</div><div class="view-publicaciones-buscador">', "")
+
+    def respond(_: httpx.Request) -> httpx.Response:
+        return httpx.Response(200, text=html)
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        reports = BanrepSource(client).discover(2)
+    assert [r.report_id for r in reports] == ["ipm-2026-07", "ipm-2026-04"]
+
+
+def test_page_with_only_complements_continues():
+    complementary = history(
+        row("Presentación del Informe de Política Monetaria - julio de 2026", "/es/p", "/p.pdf")
+    )
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200, text=complementary if not request.url.params else history(july())
+        )
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        assert BanrepSource(client).discover(1)[0].report_id == "ipm-2026-07"
+
+
 def test_blocked_next_page_does_not_return_partial_window():
     def respond(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
@@ -102,11 +155,16 @@ def test_blocked_next_page_does_not_return_partial_window():
 
 
 def test_unverified_redirect_is_rejected():
-    with httpx.Client(
-        transport=httpx.MockTransport(lambda _: httpx.Response(302, headers={"location": ROOT}))
-    ) as client:
+    visited = []
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        visited.append(str(request.url))
+        return httpx.Response(302, headers={"location": "https://validate.perfdrive.com/"})
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         with pytest.raises(SourceError, match="redirección"):
             BanrepSource(client).discover(1)
+    assert len(visited) == 1
 
 
 def test_report_with_em_dash_is_not_silently_skipped():

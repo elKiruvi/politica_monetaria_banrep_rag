@@ -1,6 +1,7 @@
 """Descubrimiento conservador de informes principales en el histórico oficial."""
 
 import re
+import unicodedata
 from dataclasses import asdict, dataclass
 from datetime import UTC, datetime
 from urllib.parse import unquote, urljoin, urlsplit
@@ -39,6 +40,12 @@ class SourceError(Exception):
     """La fuente no permite verificar con certeza la ventana solicitada."""
 
 
+def _safe_text(value: str) -> str:
+    if any(unicodedata.category(char) in {"Cc", "Cf"} for char in value):
+        raise SourceError("La fuente incluyó caracteres de control en un título o enlace.")
+    return value
+
+
 @dataclass(frozen=True)
 class ReportRecord:
     report_id: str
@@ -58,6 +65,7 @@ class ReportRecord:
 
 
 def _official_url(href: str, *, download: bool = False) -> str:
+    _safe_text(href)
     raw = urlsplit(href)
     if not raw.path or any(part in {".", ".."} for part in unquote(raw.path).split("/")):
         raise SourceError("La fuente proporcionó una ruta vacía o ambigua.")
@@ -107,8 +115,8 @@ def parse_history(html: str, checked_at: str) -> list[ReportRecord]:
             continue
         link = element.select_one(".titulo h2 a")
         if link is None:
-            continue
-        title = link.get_text(" ", strip=True)
+            raise SourceError("Una fila del histórico carece de título clasificable.")
+        title = _safe_text(link.get_text(" ", strip=True))
         match = MAIN_TITLE.fullmatch(title)
         if not match:
             if title.casefold().startswith("informe de política monetaria"):
@@ -139,7 +147,7 @@ def parse_history(html: str, checked_at: str) -> list[ReportRecord]:
                 download_url=_official_url(str(downloads[0]["href"]), download=True),
             )
         )
-    if not result:
+    if not result and not view.select(".views-row"):
         raise SourceError("No se encontró ningún informe principal verificable.")
     ids = [report.report_id for report in result]
     if len(ids) != len(set(ids)):
@@ -167,7 +175,11 @@ class BanrepSource:
         selected: dict[str, ReportRecord] = {}
         for page in range(41):
             try:
-                response = self.client.get(HISTORY_URL, params={"page": page} if page else None)
+                response = self.client.get(
+                    HISTORY_URL,
+                    params={"page": page} if page else None,
+                    follow_redirects=False,
+                )
             except httpx.HTTPError as exc:
                 raise SourceError("No se pudo consultar el histórico oficial.") from exc
             if (
@@ -192,8 +204,6 @@ class BanrepSource:
                 return sorted(
                     selected.values(), key=lambda item: item.reference_period, reverse=True
                 )[:max_reports]
-            if page and not reports:
-                break
         raise SourceError(
             f"Solo se verificaron {len(selected)} de {max_reports} informes; "
             "se conserva el catálogo anterior."
