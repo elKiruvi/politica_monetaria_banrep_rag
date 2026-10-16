@@ -64,6 +64,7 @@ class PdfDownloader:
         public_headers = {"accept", "accept-encoding", "connection", "user-agent"}
         if (
             client.auth is not None
+            or client.params
             or any(key.lower() not in public_headers for key in client.headers)
             or client.cookies
             or any(client.event_hooks.values())
@@ -93,6 +94,8 @@ class PdfDownloader:
             self._reject_client_credentials(self.client)
             try:
                 with self.client.stream("GET", url, follow_redirects=False) as response:
+                    # La fuente pública no requiere ni conserva cookies entre saltos.
+                    self.client.cookies.clear()
                     if response.status_code in {301, 302, 303, 307, 308}:
                         location = response.headers.get("location")
                         if not location:
@@ -157,6 +160,8 @@ class PdfDownloader:
                 os.fsync(handle.fileno())
             if decoder is not None and not decoder.eof:
                 raise DownloadError("La respuesta comprimida está incompleta o excede el límite.")
+            if decoder is not None and decoder.unused_data:
+                raise DownloadError("La respuesta comprimida contiene datos sobrantes.")
             if declared and raw_total != declared:
                 raise DownloadError("La descarga está truncada o tiene un tamaño contradictorio.")
             if total < 8:

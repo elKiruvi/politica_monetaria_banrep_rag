@@ -135,6 +135,20 @@ def test_gzip_bomb_is_limited_before_expansion(tmp_path, report):
     assert list(tmp_path.iterdir()) == []
 
 
+def test_gzip_trailing_data_is_rejected(tmp_path, report, pdf_bytes):
+    compressed = gzip.compress(pdf_bytes) + b"<html>contenido ajeno</html>"
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                200, headers={"content-encoding": "gzip"}, stream=httpx.ByteStream(compressed)
+            )
+        )
+    ) as client:
+        with pytest.raises(DownloadError, match="datos sobrantes"):
+            PdfDownloader(client).download(report, tmp_path)
+    assert list(tmp_path.iterdir()) == []
+
+
 def test_interrupted_stream_removes_partial_file(tmp_path, report):
     class BrokenStream(httpx.SyncByteStream):
         def __iter__(self):
@@ -171,6 +185,7 @@ def test_page_limit_rejects_valid_pdf_without_saving(tmp_path, report):
         {"auth": ("usuario", "secreto")},
         {"headers": {"Cookie": "sesion=privada"}},
         {"headers": {"X-Api-Key": "secreto"}},
+        {"params": {"api_key": "secreto"}},
     ],
 )
 def test_rejects_authenticated_clients(kwargs):
@@ -187,6 +202,23 @@ def test_rejects_credentials_added_after_initialization(report, tmp_path):
         client.headers["Authorization"] = "Bearer secreto"
         with pytest.raises(ValueError, match="credenciales"):
             downloader.download(report, tmp_path)
+
+
+def test_cookie_set_by_doi_is_not_sent_to_repository(tmp_path, report, pdf_bytes):
+    def respond(request):
+        if request.url.host == "doi.org":
+            return httpx.Response(
+                302,
+                headers={
+                    "location": "https://repositorio.banrep.gov.co/informe.pdf",
+                    "set-cookie": "sesion=no-reenviar; Path=/",
+                },
+            )
+        assert "cookie" not in request.headers
+        return httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        assert PdfDownloader(client).download(report, tmp_path).pages_count == 1
 
 
 def test_total_deadline_aborts_stream_and_cleans_file(tmp_path, report, pdf_bytes, monkeypatch):
