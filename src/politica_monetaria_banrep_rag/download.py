@@ -50,7 +50,8 @@ class PdfDownloader:
             timeout=httpx.Timeout(45, connect=5, read=30),
             follow_redirects=False,
             headers={
-                "User-Agent": "banrep-rag/0.1 (+https://github.com/elKiruvi/politica_monetaria_banrep_rag)"
+                "User-Agent": "banrep-rag/0.1 (+https://github.com/elKiruvi/politica_monetaria_banrep_rag)",
+                "Accept-Encoding": "identity",
             },
         )
         self.max_bytes = max_bytes
@@ -102,6 +103,7 @@ class PdfDownloader:
         self, response: httpx.Response, report_id: str, raw_dir: Path, url: str
     ) -> DownloadResult:
         mime = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
+        encoded = response.headers.get("content-encoding", "identity").lower() != "identity"
         if mime and mime not in {"application/pdf", "application/octet-stream"}:
             raise DownloadError("La respuesta no declara un documento PDF.")
         try:
@@ -125,7 +127,7 @@ class PdfDownloader:
                     handle.write(block)
                 handle.flush()
                 os.fsync(handle.fileno())
-            if declared and total != declared:
+            if declared and not encoded and total != declared:
                 raise DownloadError("La descarga está truncada o tiene un tamaño contradictorio.")
             if total < 8:
                 raise DownloadError("La descarga PDF está vacía o incompleta.")
@@ -143,6 +145,12 @@ class PdfDownloader:
             if pages < 1 or pages > self.max_pages:
                 raise DownloadError("El número de páginas excede los límites permitidos.")
             target = raw_dir / f"{report_id}-{digest.hexdigest()}.pdf"
+            if target.is_file() and not target.is_symlink() and target.stat().st_size == total:
+                with target.open("rb") as existing:
+                    if hashlib.file_digest(existing, "sha256").hexdigest() == digest.hexdigest():
+                        return DownloadResult(
+                            target, digest.hexdigest(), total, pages, url, mime or "application/pdf"
+                        )
             os.replace(tmp, target)
             return DownloadResult(
                 target, digest.hexdigest(), total, pages, url, mime or "application/pdf"

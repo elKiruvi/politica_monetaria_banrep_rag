@@ -1,3 +1,4 @@
+import gzip
 import hashlib
 import io
 from dataclasses import replace
@@ -76,7 +77,9 @@ def test_same_bytes_are_idempotent_and_correction_preserves_first_copy(tmp_path,
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         downloader = PdfDownloader(client)
         first = downloader.download(report, tmp_path)
+        initial_mtime = first.path.stat().st_mtime_ns
         assert downloader.download(report, tmp_path).path == first.path
+        assert first.path.stat().st_mtime_ns == initial_mtime
         updated = downloader.download(report, tmp_path)
         assert updated.sha256 != first.sha256
         assert first.path.read_bytes() == pdf_bytes
@@ -139,6 +142,23 @@ def test_retry_after_then_success(tmp_path, report, pdf_bytes, monkeypatch):
         assert PdfDownloader(client).download(report, tmp_path).pages_count == 1
     assert calls == 2
     assert delays == [0]
+
+
+def test_gzip_transport_uses_uncompressed_pdf_size(tmp_path, report, pdf_bytes):
+    compressed = gzip.compress(pdf_bytes)
+    headers = {
+        "content-type": "application/pdf",
+        "content-encoding": "gzip",
+        "content-length": str(len(compressed)),
+    }
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, headers=headers, content=compressed)
+        )
+    ) as client:
+        result = PdfDownloader(client).download(report, tmp_path)
+    assert result.path.read_bytes() == pdf_bytes
+    assert result.bytes_count == len(pdf_bytes)
 
 
 def test_interrupted_stream_removes_partial_file(tmp_path, report):
