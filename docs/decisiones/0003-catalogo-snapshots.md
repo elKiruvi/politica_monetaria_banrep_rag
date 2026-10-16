@@ -1,0 +1,7 @@
+# 0003 — Catálogo activado por snapshot
+
+**Decisión:** mantener PDF por hash en `raw/`, snapshots JSON inmutables en `snapshots/` y un único puntero `current.json`. La sincronización adquiere un bloqueo local, verifica la ventana completa de informes principales en español, descarga y comprueba todos los PDF, y solo entonces cambia el puntero mediante reemplazo atómico. Los lectores obtienen el identificador del snapshot activo antes de leer sus registros.
+
+Una nueva fecha de descubrimiento sin cambios en los documentos no crea otra revisión. Un archivo corregido tiene otro hash y conserva el anterior; cambiar N crea otro snapshot. Si falla una descarga o la publicación del puntero antes del reemplazo, la versión anterior permanece activa. Pueden quedar PDF o snapshots no activos para una operación de limpieza futura: **no eliminarlos** mientras puedan respaldar versiones anteriores.
+
+**Límites:** este snapshot es solo un catálogo de metadatos y rutas locales, **no** un índice de texto o embeddings. No se ha conectado aún a la CLI ni comprobado con doce PDF reales: el histórico/DOI oficial sigue bloqueado desde este entorno. El almacén es local y confiable; no admite escritores externos que modifiquen PDF o punteros simultáneamente. El bloqueo usa `fcntl` (Linux/POSIX). Un error de disco durante la sincronización final o un fallo de proceso posterior al reemplazo debe verificarse leyendo `current.json`; no se promete rollback de un reemplazo ya completado.
