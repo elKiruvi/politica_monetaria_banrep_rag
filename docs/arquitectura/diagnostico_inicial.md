@@ -6,8 +6,6 @@ El checkout en `/home/elkiruvi/proyectos/politica_monetaria_banrep_rag` apunta a
 
 La página [histórica oficial](https://www.banrep.gov.co/es/publicaciones-investigaciones/informe-politica-monetaria/historico-informes) incluye, en el HTML inicial, julio y abril de 2026; cada sección mezcla un informe principal, presentación y recuadros. El informe de julio enlaza a `https://doi.org/rh7c`, que redirige al repositorio `repositorio.banrep.gov.co`. La paginación `?page=1` y el filtro `?field_date_format_value=2` devolvieron **Radware Bot Manager Block**; no son páginas vacías. No se eludirá ese control: aún no se han verificado los doce informes principales.
 
-En la nueva CLI una consulta posterior a la portada obtuvo **HTTP 302** hacia `validate.perfdrive.com`, fuera de la lista de hosts permitidos; tanto `--max-reports 2` como `12` terminaron con código 1. No se siguió esa redirección ni se creó un catálogo parcial. Las pruebas de clasificación sobre el HTML de la primera solicitud extrajeron exclusivamente `ipm-2026-07` e `ipm-2026-04`.
-
 El `robots.txt` de Banrep no prohíbe la página histórica ni las rutas de informes; sí prohíbe rutas administrativas y de búsqueda. Esto no autoriza a eludir restricciones adicionales de acceso ni implica licencia para redistribuir PDF.
 
 ## Auditoría del original
