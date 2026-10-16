@@ -11,6 +11,7 @@ from politica_monetaria_banrep_rag import diagnostics
 from politica_monetaria_banrep_rag.catalog import Catalog, CatalogError
 from politica_monetaria_banrep_rag.crossref import CrossrefReportSource
 from politica_monetaria_banrep_rag.download import DownloadError, PdfDownloader
+from politica_monetaria_banrep_rag.importer import ImportFileError, identify
 from politica_monetaria_banrep_rag.source import BanrepSource, ReportSource, SourceError
 
 SOURCES = ("crossref", "historico")
@@ -63,6 +64,87 @@ def _print_plan(plan: dict[str, object]) -> None:
         print(f"  {report_id} — sale de la ventana activa (el PDF se conserva)")
 
 
+def _data_dir(args: argparse.Namespace) -> Path:
+    data_dir = args.data_dir or os.getenv("BANREP_DATA_DIR")
+    return Path(data_dir).expanduser() if data_dir else Path.home() / ".local/share/banrep-rag"
+
+
+def _offline_catalog(root: Path) -> Catalog:
+    """Catálogo para operaciones locales: sus clientes HTTP no se usan."""
+    return Catalog(root, BanrepSource(), PdfDownloader())
+
+
+def _import(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    if args.periodo and len(args.archivos) != 1:
+        parser.exit(2, "Error: --periodo solo se admite con un único archivo.\n")
+    root = _data_dir(args)
+    try:
+        with ExitStack() as stack:
+            catalog = _offline_catalog(root)
+            stack.callback(catalog.source.client.close)
+            stack.callback(catalog.downloader.client.close)
+            lookup = None
+            if not args.sin_red:
+                lookup = CrossrefReportSource(
+                    contact_email=os.getenv("BANREP_CONTACT_EMAIL") or None
+                )
+                stack.callback(lookup.client.close)
+            for path in args.archivos:
+                identification = identify(path, args.periodo)
+                report = lookup.find(identification.report_id) if lookup is not None else None
+                if lookup is not None and report is None:
+                    raise ImportFileError(
+                        f"Crossref no registra el informe {identification.report_id[4:]}; "
+                        "use --sin-red para importarlo sin metadatos verificados."
+                    )
+                catalog.import_pdf(path, identification, report)
+                origin = "metadatos de Crossref" if report else "metadatos sin verificar"
+                print(
+                    f"Importado {identification.report_id} desde «{path.name}» "
+                    f"({', '.join(identification.evidence)}; {origin})."
+                )
+            if args.activar:
+                print(f"Catálogo activo (importación local): {catalog.activate_imports()}")
+    except OSError as exc:
+        parser.exit(1, f"Error de importación: {_local_failure(exc)}\n")
+    except (ImportFileError, CatalogError, SourceError, ValueError) as exc:
+        parser.exit(1, f"Error de importación: {exc}\n")
+
+
+def _status(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    root = _data_dir(args)
+    try:
+        catalog = _offline_catalog(root)
+        with catalog.source.client, catalog.downloader.client:
+            active = catalog.current()
+    except CatalogError as exc:
+        parser.exit(1, f"Error: {exc}\n")
+    if active is None:
+        print(f"No hay catálogo activo en {root}. Ejecute «banrep-rag sincronizar» o «importar».")
+        return
+    snapshot_id, snapshot = active
+    if args.json:
+        print(json.dumps({"snapshot": snapshot_id, **snapshot}, ensure_ascii=False, indent=2))
+        return
+    selection = snapshot.get("selection") or {"mode": "latest_n"}
+    records = snapshot["reports"]
+    assert isinstance(selection, dict) and isinstance(records, list)
+    mode = (
+        "importación local (no equivale a los últimos N informes)"
+        if selection.get("mode") == "local_import"
+        else f"últimos {selection.get('max_reports', len(records))} informes"
+    )
+    print(f"Catálogo activo {snapshot_id[:12]} — {mode}")
+    for record in records:
+        report, pdf = record["report"], record["pdf"]
+        method = (record.get("acquisition") or {"method": "download"})["method"]
+        origin = "importado" if method == "local_import" else "descargado"
+        print(
+            f"  {report['reference_period']}  {report['title']} — {pdf['pages']} págs., "
+            f"{origin}, sha256 {str(pdf['sha256'])[:12]}"
+        )
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="banrep-rag", description="Consulta local de informes de política monetaria."
@@ -94,6 +176,11 @@ def main() -> None:
         "--dry-run", action="store_true", help="Muestra qué cambiaría sin descargar nada"
     )
     sync.add_argument(
+        "--usar-importados",
+        action="store_true",
+        help="Si una descarga falla, usa el PDF importado localmente para ese informe",
+    )
+    sync.add_argument(
         "--revalidar-dias",
         type=_non_negative,
         default=30.0,
@@ -105,7 +192,28 @@ def main() -> None:
         default=10.0,
         help="Segundos de espera entre descargas reales (por defecto: 10)",
     )
+    importer_cmd = subcommands.add_parser(
+        "importar", help="Importa PDF oficiales obtenidos legítimamente (procedencia local)"
+    )
+    importer_cmd.add_argument("archivos", nargs="+", type=Path, help="PDF a importar")
+    importer_cmd.add_argument("--periodo", help="AAAA-MM; solo con un archivo, para confirmar")
+    importer_cmd.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
+    importer_cmd.add_argument(
+        "--activar", action="store_true", help="Activa un catálogo con los PDF importados"
+    )
+    importer_cmd.add_argument(
+        "--sin-red", action="store_true", help="No consulta Crossref (metadatos sin verificar)"
+    )
+    status_cmd = subcommands.add_parser("estado", help="Muestra el catálogo local activo")
+    status_cmd.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
+    status_cmd.add_argument("--json", action="store_true", help="Emite el snapshot en JSON")
     args = parser.parse_args()
+    if args.command == "importar":
+        _import(parser, args)
+        return
+    if args.command == "estado":
+        _status(parser, args)
+        return
     if args.command == "diagnostico":
         print("La sincronización del catálogo está disponible; las consultas aún no.")
     elif args.command == "diagnostico-fuentes":
@@ -132,10 +240,7 @@ def main() -> None:
         if source_name not in SOURCES:
             parser.exit(2, "Error: la fuente debe ser «crossref» o «historico».\n")
         if args.command == "sincronizar":
-            data_dir = args.data_dir or os.getenv("BANREP_DATA_DIR")
-            root = (
-                Path(data_dir).expanduser() if data_dir else Path.home() / ".local/share/banrep-rag"
-            )
+            root = _data_dir(args)
             try:
                 with ExitStack() as stack:
                     source = _make_source(source_name)
@@ -153,7 +258,7 @@ def main() -> None:
                     if args.dry_run:
                         _print_plan(catalog.plan(max_reports))
                         return
-                    snapshot_id = catalog.sync(max_reports)
+                    snapshot_id = catalog.sync(max_reports, use_imports=args.usar_importados)
             except OSError as exc:
                 parser.exit(1, f"Error de sincronización: {_local_failure(exc)}\n")
             except (SourceError, DownloadError, CatalogError, ValueError) as exc:

@@ -29,6 +29,16 @@ uv run --frozen ruff check .
 
 **No se ha comprobado una sincronización real de doce PDF:** desde el equipo de desarrollo, el repositorio institucional responde con una verificación antibot (Radware) a las solicitudes de PDF; la descarga falla con un mensaje explícito. El comando falla cerrado; no intentes eludir sus controles ni interpretes un snapshot de catálogo como índice RAG. La [decisión de snapshots](docs/decisiones/0003-catalogo-snapshots.md) detalla sus límites.
 
+## Estado del catálogo e importación local
+
+`uv run --frozen banrep-rag estado` muestra el catálogo activo, sus informes y cómo se obtuvo cada PDF. Si la descarga automática está bloqueada, puedes descargar los PDF con tu navegador desde el [sitio del Banco](https://www.banrep.gov.co/es/publicaciones-investigaciones/informe-politica-monetaria/historico-informes) e importarlos:
+
+```sh
+uv run --frozen banrep-rag importar ~/Descargas/informe-politica-monetaria-*.pdf --activar
+```
+
+El periodo se identifica con el título interno del PDF y su portada, y los metadatos se verifican en Crossref (`--sin-red` lo omite). Un catálogo importado se marca como tal: **no** equivale a «los últimos 12 informes». Con `sincronizar --usar-importados`, un PDF importado solo sustituye a una descarga que falló. Detalles en la [ADR 0005](docs/decisiones/0005-importacion-local.md).
+
 El diagnóstico de investigación, incluido el bloqueo de las consultas paginadas a la fuente, está en [docs/arquitectura/diagnostico_inicial.md](docs/arquitectura/diagnostico_inicial.md). Las entregas pendientes se describen en los issues. No se exige ningún proveedor comercial para instalar la base.
 
 ## Derechos

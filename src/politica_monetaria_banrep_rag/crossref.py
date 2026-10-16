@@ -224,6 +224,28 @@ class CrossrefReportSource:
             raise SourceError(f"Crossref no devolvió completo el año {year}; no se continúa.")
         return items
 
+    def find(self, report_id: str) -> ReportRecord | None:
+        """Metadatos verificados de un periodo concreto (publicado ese año o el siguiente)."""
+        if not re.fullmatch(r"ipm-\d{4}-(0[1-9]|1[0-2])", report_id):
+            raise ValueError("El identificador del informe no es válido.")
+        checked_at = datetime.now(UTC).isoformat()
+        today = self.today or datetime.now(UTC).date()
+        current_year = today.year
+        year = int(report_id[4:8])
+        matches = []
+        for position, candidate_year in enumerate(y for y in (year, year + 1) if y <= current_year):
+            if position:
+                self.pause(0.5)
+            for item in self._fetch_year(candidate_year):
+                candidate = _parse_item(item, checked_at, today)
+                if candidate is not None and candidate.record.report_id == report_id:
+                    matches.append(candidate.record)
+        if len(matches) > 1:
+            raise SourceError(
+                f"Crossref registra más de un informe principal para {report_id[4:]}."
+            )
+        return matches[0] if matches else None
+
     def discover(self, max_reports: int = 12) -> list[ReportRecord]:
         if (
             not isinstance(max_reports, int)

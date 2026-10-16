@@ -14,10 +14,14 @@ from typing import BinaryIO
 
 from politica_monetaria_banrep_rag.download import (
     DownloadBlockedError,
+    DownloadError,
     DownloadTransientError,
     PdfDownloader,
+    inspect_pdf,
 )
+from politica_monetaria_banrep_rag.importer import Identification
 from politica_monetaria_banrep_rag.source import (
+    MONTHS,
     ReportRecord,
     ReportSource,
     SourceError,
@@ -32,6 +36,9 @@ _REGISTRY_FIELDS = (
     "verified_at",
     "verified_ts",
 )
+
+
+_MAX_IMPORT_BYTES = 30_000_000
 
 
 class CatalogError(Exception):
@@ -69,6 +76,35 @@ def _check_entry(report_id: str, item: dict[str, object]) -> None:
         or not _ISO_SECONDS.fullmatch(item["verified_at"])
     ):
         raise ValueError("Entrada inválida")
+
+
+def _is_import(entry: dict[str, object]) -> bool:
+    return entry.get("method") == "local_import"
+
+
+def _latest_import(entries: list[dict[str, object]]) -> dict[str, object] | None:
+    imports = [entry for entry in entries if _is_import(entry)]
+    return max(imports, key=_timestamp) if imports else None
+
+
+def _inferred_metadata(report_id: str) -> dict[str, object]:
+    """Metadatos mínimos cuando no se pudieron verificar en Crossref (sin red)."""
+    year, month = int(report_id[4:8]), int(report_id[9:11])
+    name = next(key for key, value in MONTHS.items() if value == month)
+    return ReportRecord(
+        report_id=report_id,
+        title=f"Informe de Política Monetaria - {name} de {year}",
+        document_type="main_report",
+        language="es",
+        reference_period=report_id[4:],
+        published_at=None,
+        publication_date_origin=None,
+        discovered_at="",
+        file_updated_at=None,
+        source_url="",
+        download_url="",
+        discovery_source="local_import",
+    ).to_dict()
 
 
 def _timestamp(entry: dict[str, object]) -> float:
@@ -181,7 +217,7 @@ class Catalog:
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             raise CatalogError("El catálogo activo está dañado; no se actualizará.") from exc
 
-    def sync(self, max_reports: int = 12) -> str:
+    def sync(self, max_reports: int = 12, *, use_imports: bool = False) -> str:
         if (
             not isinstance(max_reports, int)
             or isinstance(max_reports, bool)
@@ -226,8 +262,17 @@ class Catalog:
                     downloaded = True
                     try:
                         pdf = self._download(report, raw_dir, fingerprint)
-                    except (DownloadBlockedError, DownloadTransientError):
-                        if previous is None:
+                    except DownloadError as exc:
+                        transient = isinstance(exc, DownloadBlockedError | DownloadTransientError)
+                        imported = _latest_import(entries) if use_imports else None
+                        if previous is None and imported is not None:
+                            self.progress(
+                                f"Aviso: no se pudo descargar {report.report_id}; se usa el PDF "
+                                f"importado localmente el {imported['verified_at']}."
+                            )
+                            records.append(self._import_record(imported, metadata))
+                            continue
+                        if previous is None or not transient:
                             raise
                         self.progress(
                             f"Aviso: no se pudo revalidar {report.report_id}; se conserva el PDF "
@@ -253,31 +298,132 @@ class Catalog:
             # Los nombres de los PDF deben ser duraderos antes del puntero.
             _sync_directory(raw_dir)
             self._save_registry(registry)
-            data = _json_bytes(
-                {
-                    "version": 2,
-                    "selection": {"mode": "latest_n", "max_reports": max_reports},
-                    "reports": records,
-                }
+            return self._publish(
+                {"mode": "latest_n", "max_reports": max_reports}, records, deadline
             )
-            snapshot_id = hashlib.sha256(data).hexdigest()
-            snapshot_path = self.root / "snapshots" / f"{snapshot_id}.json"
-            if snapshot_path.exists():
-                if snapshot_path.read_bytes() != data:
-                    raise CatalogError("Un snapshot existente no coincide con su identificador.")
-            else:
-                _atomic_write(snapshot_path, data)
-            if self.clock() >= deadline:
-                raise CatalogError(
-                    "La sincronización superó el plazo total; se conserva el catálogo anterior."
-                )
-            active = self.current()
-            if active is None or active[0] != snapshot_id:
-                self.progress("Activando el nuevo catálogo…")
-                _atomic_write(
-                    self.root / "current.json", _json_bytes({"version": 1, "snapshot": snapshot_id})
-                )
-            return snapshot_id
+
+    def _publish(
+        self, selection: dict[str, object], records: list[dict[str, object]], deadline: float
+    ) -> str:
+        """Escribe el snapshot inmutable y, si cambió, reemplaza el puntero de forma atómica."""
+        data = _json_bytes({"version": 2, "selection": selection, "reports": records})
+        snapshot_id = hashlib.sha256(data).hexdigest()
+        snapshot_path = self.root / "snapshots" / f"{snapshot_id}.json"
+        if snapshot_path.exists():
+            if snapshot_path.read_bytes() != data:
+                raise CatalogError("Un snapshot existente no coincide con su identificador.")
+        else:
+            _atomic_write(snapshot_path, data)
+        if self.clock() >= deadline:
+            raise CatalogError(
+                "La sincronización superó el plazo total; se conserva el catálogo anterior."
+            )
+        active = self.current()
+        if active is None or active[0] != snapshot_id:
+            self.progress("Activando el nuevo catálogo…")
+            _atomic_write(
+                self.root / "current.json", _json_bytes({"version": 1, "snapshot": snapshot_id})
+            )
+        return snapshot_id
+
+    def import_pdf(
+        self, source_path: Path, identification: Identification, report: ReportRecord | None
+    ) -> dict[str, object]:
+        """Copia un PDF local validado a ``raw/`` y lo registra con procedencia ``local_import``."""
+        report_id = identification.report_id
+        if not re.fullmatch(r"ipm-\d{4}-(0[1-9]|1[0-2])", report_id):
+            raise CatalogError("El identificador del informe importado no es válido.")
+        if report is not None and report.report_id != report_id:
+            raise CatalogError("Los metadatos verificados corresponden a otro periodo.")
+        if not source_path.is_file() or source_path.stat().st_size > _MAX_IMPORT_BYTES:
+            raise CatalogError("El archivo a importar no existe o excede 30 MB.")
+        self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
+        raw_dir = self.root / "raw"
+        raw_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
+        with (self.root / ".sync.lock").open("a+b") as lock:
+            _lock_exclusive(lock)
+            fd, tmp_name = tempfile.mkstemp(prefix=".importacion-", suffix=".pdf", dir=raw_dir)
+            tmp = Path(tmp_name)
+            try:
+                digest = hashlib.sha256()
+                with source_path.open("rb") as source, os.fdopen(fd, "wb") as handle:
+                    while block := source.read(65_536):
+                        digest.update(block)
+                        handle.write(block)
+                    handle.flush()
+                    os.fsync(handle.fileno())
+                try:
+                    pages = inspect_pdf(tmp)
+                except DownloadError as exc:
+                    raise CatalogError(f"El archivo no es un PDF válido: {exc}") from exc
+                sha256 = digest.hexdigest()
+                target = raw_dir / f"{report_id}-{sha256}.pdf"
+                os.replace(tmp, target)
+                _sync_directory(raw_dir)
+            finally:
+                tmp.unlink(missing_ok=True)
+            now = self.wall_clock()
+            metadata = report.to_dict() if report is not None else _inferred_metadata(report_id)
+            metadata.pop("discovered_at", None)
+            entry: dict[str, object] = {
+                "path": f"raw/{target.name}",
+                "sha256": sha256,
+                "bytes": target.stat().st_size,
+                "pages": pages,
+                "final_url": "",
+                "mime_type": "application/pdf",
+                "download_url": report.download_url if report is not None else "",
+                "metadata_fingerprint": "",
+                "verified_at": datetime.fromtimestamp(now, UTC).isoformat(timespec="seconds"),
+                "verified_ts": now,
+                "method": "local_import",
+                "source_name": source_path.name,
+                "identified_by": list(identification.evidence),
+                "metadata_verified": report is not None,
+                "report": metadata,
+            }
+            registry = self._load_registry()
+            entries = registry.setdefault(report_id, [])
+            entries[:] = [e for e in entries if e.get("sha256") != sha256 or not _is_import(e)]
+            entries.append(entry)
+            self._save_registry(registry)
+            return entry
+
+    def activate_imports(self) -> str:
+        """Activa un catálogo con los PDF importados; no equivale a «los últimos N informes»."""
+        with (self.root / ".sync.lock").open("a+b") as lock:
+            _lock_exclusive(lock)
+            self.current()
+            registry = self._load_registry()
+            records = []
+            for report_id in sorted(registry, reverse=True):
+                imported = _latest_import(registry[report_id])
+                if imported is not None:
+                    report = imported["report"]
+                    assert isinstance(report, dict)
+                    records.append(self._import_record(imported, report))
+            if not records:
+                raise CatalogError("No hay PDF importados para activar.")
+            return self._publish({"mode": "local_import"}, records, self.clock() + self.max_seconds)
+
+    def _import_record(
+        self, entry: dict[str, object], metadata: dict[str, object]
+    ) -> dict[str, object]:
+        self._verify_local(
+            self.root / str(entry["path"]), str(entry["sha256"]), int(str(entry["bytes"]))
+        )
+        return {
+            "report": metadata,
+            "pdf": {key: entry[key] for key in _PDF_FIELDS},
+            "acquisition": {
+                "method": "local_import",
+                "source_name": entry["source_name"],
+                "imported_at": entry["verified_at"],
+                "identified_by": entry["identified_by"],
+                "metadata_verified": entry["metadata_verified"],
+                "verified_against_source": False,
+            },
+        }
 
     def plan(self, max_reports: int = 12) -> dict[str, object]:
         """Describe qué haría ``sync`` sin descargar ni escribir nada (``--dry-run``)."""
@@ -355,6 +501,8 @@ class Catalog:
     ) -> dict[str, object] | None:
         """Última descarga verificada de la misma URL y metadatos cuyo archivo sigue intacto."""
         for entry in reversed(entries):
+            if _is_import(entry):
+                continue
             if entry.get("download_url") != url or entry.get("metadata_fingerprint") != fingerprint:
                 continue
             path = self.root / str(entry["path"])

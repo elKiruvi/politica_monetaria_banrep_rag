@@ -55,6 +55,24 @@ def _retry_after(value: str | None) -> float | None:
             return None
 
 
+def inspect_pdf(path: Path, max_pages: int = 400) -> int:
+    """Comprueba firma, apertura estricta, cifrado y número de páginas; devuelve las páginas."""
+    with path.open("rb") as handle:
+        if handle.read(5) != b"%PDF-":
+            raise DownloadError("La firma PDF no es válida.")
+        handle.seek(0)
+        try:
+            reader = PdfReader(io.BytesIO(handle.read()), strict=True)
+            if reader.is_encrypted:
+                raise DownloadError("El PDF requiere contraseña.")
+            pages = len(reader.pages)
+        except (PyPdfError, ValueError, TypeError) as exc:
+            raise DownloadError("El PDF no se puede abrir o está truncado.") from exc
+    if pages < 1 or pages > max_pages:
+        raise DownloadError("El número de páginas excede los límites permitidos.")
+    return pages
+
+
 @dataclass(frozen=True)
 class DownloadResult:
     path: Path
@@ -252,19 +270,7 @@ class PdfDownloader:
             if total < 8:
                 raise DownloadError("La descarga PDF está vacía o incompleta.")
             self._check_deadline(deadline)
-            with tmp.open("rb") as handle:
-                if handle.read(5) != b"%PDF-":
-                    raise DownloadError("La firma PDF no es válida.")
-                handle.seek(0)
-                try:
-                    reader = PdfReader(io.BytesIO(handle.read()), strict=True)
-                    if reader.is_encrypted:
-                        raise DownloadError("El PDF requiere contraseña.")
-                    pages = len(reader.pages)
-                except (PyPdfError, ValueError, TypeError) as exc:
-                    raise DownloadError("El PDF no se puede abrir o está truncado.") from exc
-            if pages < 1 or pages > self.max_pages:
-                raise DownloadError("El número de páginas excede los límites permitidos.")
+            pages = inspect_pdf(tmp, self.max_pages)
             self._check_deadline(deadline)
             target = raw_dir / f"{report_id}-{digest.hexdigest()}.pdf"
             identical = self._existing_file_is_identical(target, digest.hexdigest(), total)
