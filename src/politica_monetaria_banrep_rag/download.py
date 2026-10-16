@@ -6,6 +6,7 @@ import os
 import re
 import tempfile
 import time
+import zlib
 from dataclasses import dataclass
 from pathlib import Path
 from urllib.parse import urljoin
@@ -44,16 +45,8 @@ class PdfDownloader:
     ) -> None:
         if min(max_bytes, max_pages, max_seconds) < 1:
             raise ValueError("Los límites de descarga deben ser positivos.")
-        if client is not None and (
-            client.auth is not None
-            or any(
-                client.headers.get(name)
-                for name in ("Authorization", "Proxy-Authorization", "Cookie")
-            )
-            or client.cookies
-            or any(client.event_hooks.values())
-        ):
-            raise ValueError("La descarga pública no admite clientes con credenciales ni hooks.")
+        if client is not None:
+            self._reject_client_credentials(client)
         self.client = client or httpx.Client(
             timeout=httpx.Timeout(45, connect=5, read=30),
             follow_redirects=False,
@@ -65,6 +58,17 @@ class PdfDownloader:
         self.max_bytes = max_bytes
         self.max_pages = max_pages
         self.max_seconds = max_seconds
+
+    @staticmethod
+    def _reject_client_credentials(client: httpx.Client) -> None:
+        public_headers = {"accept", "accept-encoding", "connection", "user-agent"}
+        if (
+            client.auth is not None
+            or any(key.lower() not in public_headers for key in client.headers)
+            or client.cookies
+            or any(client.event_hooks.values())
+        ):
+            raise ValueError("La descarga pública no admite clientes con credenciales ni hooks.")
 
     def download(self, report: ReportRecord, raw_dir: Path) -> DownloadResult:
         if not re.fullmatch(r"ipm-\d{4}-\d{2}", report.report_id):
@@ -86,6 +90,7 @@ class PdfDownloader:
     ) -> DownloadResult:
         for _ in range(6):
             self._check_deadline(deadline)
+            self._reject_client_credentials(self.client)
             try:
                 with self.client.stream("GET", url, follow_redirects=False) as response:
                     if response.status_code in {301, 302, 303, 307, 308}:
@@ -110,7 +115,9 @@ class PdfDownloader:
         self, response: httpx.Response, report_id: str, raw_dir: Path, url: str, deadline: float
     ) -> DownloadResult:
         mime = response.headers.get("content-type", "").split(";", 1)[0].strip().lower()
-        encoded = response.headers.get("content-encoding", "identity").lower() != "identity"
+        encoding = response.headers.get("content-encoding", "identity").lower()
+        if encoding not in {"identity", "gzip"}:
+            raise DownloadError("La compresión HTTP de la respuesta no está admitida.")
         if mime and mime not in {"application/pdf", "application/octet-stream"}:
             raise DownloadError("La respuesta no declara un documento PDF.")
         try:
@@ -124,10 +131,23 @@ class PdfDownloader:
         tmp = Path(tmp_name)
         digest = hashlib.sha256()
         total = 0
+        raw_total = 0
+        decoder = zlib.decompressobj(16 + zlib.MAX_WBITS) if encoding == "gzip" else None
         try:
             with os.fdopen(fd, "wb") as handle:
-                for block in response.iter_bytes(chunk_size=65_536):
+                for raw_block in response.iter_raw(chunk_size=65_536):
                     self._check_deadline(deadline)
+                    raw_total += len(raw_block)
+                    if raw_total > self.max_bytes:
+                        raise DownloadError("El archivo excede el límite de tamaño.")
+                    try:
+                        block = (
+                            decoder.decompress(raw_block, self.max_bytes - total + 1)
+                            if decoder is not None
+                            else raw_block
+                        )
+                    except zlib.error as exc:
+                        raise DownloadError("La compresión HTTP está dañada.") from exc
                     total += len(block)
                     if total > self.max_bytes:
                         raise DownloadError("El archivo excede el límite de tamaño.")
@@ -135,7 +155,9 @@ class PdfDownloader:
                     handle.write(block)
                 handle.flush()
                 os.fsync(handle.fileno())
-            if declared and not encoded and total != declared:
+            if decoder is not None and not decoder.eof:
+                raise DownloadError("La respuesta comprimida está incompleta o excede el límite.")
+            if declared and raw_total != declared:
                 raise DownloadError("La descarga está truncada o tiene un tamaño contradictorio.")
             if total < 8:
                 raise DownloadError("La descarga PDF está vacía o incompleta.")
@@ -153,6 +175,7 @@ class PdfDownloader:
                     raise DownloadError("El PDF no se puede abrir o está truncado.") from exc
             if pages < 1 or pages > self.max_pages:
                 raise DownloadError("El número de páginas excede los límites permitidos.")
+            self._check_deadline(deadline)
             target = raw_dir / f"{report_id}-{digest.hexdigest()}.pdf"
             os.replace(tmp, target)
             return DownloadResult(

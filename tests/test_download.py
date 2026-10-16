@@ -47,7 +47,9 @@ def test_redirects_to_official_repository_and_saves_atomically(tmp_path, report,
                 302,
                 headers={"location": "https://repositorio.banrep.gov.co/bitstream/ipm-julio.pdf"},
             )
-        return httpx.Response(200, headers={"content-type": "application/pdf"}, content=pdf_bytes)
+        return httpx.Response(
+            200, headers={"content-type": "application/pdf"}, stream=httpx.ByteStream(pdf_bytes)
+        )
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         result = PdfDownloader(client).download(report, tmp_path)
@@ -75,7 +77,7 @@ def test_rejects_unsafe_or_invalid_responses(tmp_path, report, status, headers, 
 
     def respond(request):
         visited.append(str(request.url))
-        return httpx.Response(status, headers=headers, content=body)
+        return httpx.Response(status, headers=headers, stream=httpx.ByteStream(body))
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
         with pytest.raises(DownloadError):
@@ -87,7 +89,9 @@ def test_rejects_unsafe_or_invalid_responses(tmp_path, report, status, headers, 
 
 def test_size_limit_cleans_temporary_file(tmp_path, report, pdf_bytes):
     with httpx.Client(
-        transport=httpx.MockTransport(lambda _: httpx.Response(200, content=pdf_bytes))
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        )
     ) as client:
         with pytest.raises(DownloadError, match="límite"):
             PdfDownloader(client, max_bytes=50).download(report, tmp_path)
@@ -109,12 +113,26 @@ def test_gzip_transport_uses_uncompressed_pdf_size(tmp_path, report, pdf_bytes):
     }
     with httpx.Client(
         transport=httpx.MockTransport(
-            lambda _: httpx.Response(200, headers=headers, content=compressed)
+            lambda _: httpx.Response(200, headers=headers, stream=httpx.ByteStream(compressed))
         )
     ) as client:
         result = PdfDownloader(client).download(report, tmp_path)
     assert result.path.read_bytes() == pdf_bytes
     assert result.bytes_count == len(pdf_bytes)
+
+
+def test_gzip_bomb_is_limited_before_expansion(tmp_path, report):
+    compressed = gzip.compress(b"%PDF-" + b"x" * 5_000_000)
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(
+                200, headers={"content-encoding": "gzip"}, stream=httpx.ByteStream(compressed)
+            )
+        )
+    ) as client:
+        with pytest.raises(DownloadError, match="límite"):
+            PdfDownloader(client, max_bytes=10_000).download(report, tmp_path)
+    assert list(tmp_path.iterdir()) == []
 
 
 def test_interrupted_stream_removes_partial_file(tmp_path, report):
@@ -138,7 +156,9 @@ def test_page_limit_rejects_valid_pdf_without_saving(tmp_path, report):
     output = io.BytesIO()
     writer.write(output)
     with httpx.Client(
-        transport=httpx.MockTransport(lambda _: httpx.Response(200, content=output.getvalue()))
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(output.getvalue()))
+        )
     ) as client:
         with pytest.raises(DownloadError, match="páginas"):
             PdfDownloader(client, max_pages=1).download(report, tmp_path)
@@ -146,12 +166,27 @@ def test_page_limit_rejects_valid_pdf_without_saving(tmp_path, report):
 
 
 @pytest.mark.parametrize(
-    "kwargs", [{"auth": ("usuario", "secreto")}, {"headers": {"Cookie": "sesion=privada"}}]
+    "kwargs",
+    [
+        {"auth": ("usuario", "secreto")},
+        {"headers": {"Cookie": "sesion=privada"}},
+        {"headers": {"X-Api-Key": "secreto"}},
+    ],
 )
 def test_rejects_authenticated_clients(kwargs):
     with httpx.Client(**kwargs) as client:
         with pytest.raises(ValueError, match="credenciales"):
             PdfDownloader(client)
+
+
+def test_rejects_credentials_added_after_initialization(report, tmp_path):
+    with httpx.Client(
+        transport=httpx.MockTransport(lambda _: pytest.fail("No debe haber solicitud"))
+    ) as client:
+        downloader = PdfDownloader(client)
+        client.headers["Authorization"] = "Bearer secreto"
+        with pytest.raises(ValueError, match="credenciales"):
+            downloader.download(report, tmp_path)
 
 
 def test_total_deadline_aborts_stream_and_cleans_file(tmp_path, report, pdf_bytes, monkeypatch):
@@ -164,7 +199,9 @@ def test_total_deadline_aborts_stream_and_cleans_file(tmp_path, report, pdf_byte
 
     monkeypatch.setattr("politica_monetaria_banrep_rag.download.time.monotonic", monotonic)
     with httpx.Client(
-        transport=httpx.MockTransport(lambda _: httpx.Response(200, content=pdf_bytes))
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        )
     ) as client:
         with pytest.raises(DownloadError, match="tiempo máximo"):
             PdfDownloader(client, max_seconds=2).download(report, tmp_path)
