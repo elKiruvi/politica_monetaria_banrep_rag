@@ -170,7 +170,7 @@ def test_annex_continuation_without_title_and_orphan_small_text(tmp_path):
 def test_chapter_title_in_sidebar_comes_first_and_note_calls_are_removed(tmp_path):
     path = tmp_path / "capitulo.pdf"
     items = [
-        (57, 700, 16, "1. Resumen", "B"),
+        (57, 780, 16, "1. Resumen", "B"),
         (291, 760, 10, "1.1 Resumen macroeconómico6, 7", "B"),
         (291, 740, 10, "La inflación bajaría al 3 % en 2026 según el pronóstico.", "R"),
         (291, 728, 10, "El crecimiento económico seguiría recuperándose este año.", "R"),

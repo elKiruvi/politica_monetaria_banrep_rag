@@ -406,18 +406,20 @@ def _merge_footnote_markers(blocks: list[Block]) -> list[Block]:
 
 
 def _order(blocks: list[Block], main_column: int) -> list[Block]:
-    def key(block: Block) -> tuple[int, float, float]:
+    """Orden de lectura por altura, intercalando columna principal y barra lateral.
+
+    Así un gráfico o cuadro de la barra queda en la sección donde aparece visualmente. Las
+    notas al pie van después del contenido y las cabeceras y números de página al final.
+    """
+
+    def key(block: Block) -> tuple[int, float, int, float]:
         if block.kind in {"running_header", "page_number"}:
             rank = 9
-        elif block.column == -1 or (block.kind == "heading" and block.size >= 13):
-            rank = 0  # títulos de capítulo, aunque estén en la barra lateral
         elif block.kind == "footnote":
             rank = 3
-        elif block.column == main_column:
-            rank = 1
         else:
-            rank = 2
-        return rank, -block.bbox[3], block.bbox[0]
+            rank = 1
+        return rank, -block.bbox[3], 0 if block.column == main_column else 1, block.bbox[0]
 
     return sorted(blocks, key=key)
 
