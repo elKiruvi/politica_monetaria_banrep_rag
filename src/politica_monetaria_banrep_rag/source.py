@@ -155,6 +155,12 @@ def parse_history(html: str, checked_at: str) -> list[ReportRecord]:
     return result
 
 
+def _page_signature(reports: list[ReportRecord]) -> list[tuple[str, str, str, str, str]]:
+    return [
+        (r.report_id, r.title, r.reference_period, r.source_url, r.download_url) for r in reports
+    ]
+
+
 class BanrepSource:
     """Consulta únicamente páginas públicas, sin eludir controles de acceso."""
 
@@ -195,20 +201,18 @@ class BanrepSource:
         if max_reports < 1 or max_reports > 100:
             raise ValueError("max_reports debe estar entre 1 y 100.")
         selected: dict[str, ReportRecord] = {}
-        first_page: list[tuple[str, str]] | None = None
+        first_page: list[tuple[str, str, str, str, str]] | None = None
         for page in range(41):
             reports = self._fetch_page(page)
             if page == 0:
-                first_page = [(report.report_id, report.download_url) for report in reports]
+                first_page = _page_signature(reports)
             for report in reports:
                 previous = selected.get(report.report_id)
                 if previous is not None and previous.download_url != report.download_url:
                     raise SourceError("Un periodo tiene descargas contradictorias entre páginas.")
                 selected[report.report_id] = report
             if len(selected) >= max_reports:
-                if page > 0 and first_page != [
-                    (report.report_id, report.download_url) for report in self._fetch_page(0)
-                ]:
+                if page > 0 and first_page != _page_signature(self._fetch_page(0)):
                     raise SourceError(
                         "El histórico cambió durante la paginación; repita la consulta."
                     )

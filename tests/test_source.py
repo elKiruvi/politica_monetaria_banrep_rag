@@ -166,6 +166,24 @@ def test_archive_changes_mid_pagination_fail_closed():
     assert first_page_calls == 2
 
 
+def test_source_page_changes_with_same_doi_fail_closed():
+    first_page_calls = 0
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal first_page_calls
+        if request.url.params:
+            return httpx.Response(200, text=history(april(), "2026 - abril"))
+        first_page_calls += 1
+        entry = (
+            july() if first_page_calls == 1 else july().replace("/es/informe/julio", "/es/nuevo")
+        )
+        return httpx.Response(200, text=history(entry))
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(SourceError, match="cambió durante"):
+            BanrepSource(client).discover(2)
+
+
 def test_blocked_next_page_does_not_return_partial_window():
     def respond(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
