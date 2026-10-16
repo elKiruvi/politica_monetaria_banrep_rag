@@ -1,7 +1,12 @@
 import httpx
 import pytest
 
-from politica_monetaria_banrep_rag.source import BanrepSource, SourceError, parse_history
+from politica_monetaria_banrep_rag.source import (
+    BanrepSource,
+    SourceBlockedError,
+    SourceError,
+    parse_history,
+)
 
 
 def history(rows: str, heading: str = "2026 - julio") -> str:
@@ -195,15 +200,22 @@ def test_blocked_next_page_does_not_return_partial_window():
             BanrepSource(client).discover(12)
 
 
-def test_unverified_redirect_is_rejected():
+@pytest.mark.parametrize(
+    "location,error,message",
+    [
+        ("https://validate.perfdrive.com/?ssa=1", SourceBlockedError, "antibot"),
+        ("https://www.banrep.gov.co/es/otra", SourceError, "redirección"),
+    ],
+)
+def test_unverified_redirect_is_rejected(location, error, message):
     visited = []
 
     def respond(request: httpx.Request) -> httpx.Response:
         visited.append(str(request.url))
-        return httpx.Response(302, headers={"location": "https://validate.perfdrive.com/"})
+        return httpx.Response(302, headers={"location": location})
 
     with httpx.Client(transport=httpx.MockTransport(respond)) as client:
-        with pytest.raises(SourceError, match="redirección"):
+        with pytest.raises(error, match=message):
             BanrepSource(client).discover(1)
     assert len(visited) == 1
 

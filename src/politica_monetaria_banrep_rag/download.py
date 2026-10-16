@@ -20,10 +20,15 @@ from pypdf import PdfReader
 from pypdf.errors import PyPdfError
 
 from politica_monetaria_banrep_rag.source import ReportRecord, SourceError, _official_url
+from politica_monetaria_banrep_rag.urls import UnsafeUrlError, download_hop_url, is_challenge_url
 
 
 class DownloadError(Exception):
     """El documento remoto no pudo validarse; no debe activarse en el catálogo."""
+
+
+class DownloadBlockedError(DownloadError):
+    """La fuente exigió una verificación antibot; el proyecto no la elude."""
 
 
 class _TransientDownloadError(Exception):
@@ -151,9 +156,15 @@ class PdfDownloader:
                         location = response.headers.get("location")
                         if not location:
                             raise DownloadError("Falta el destino de una redirección.")
+                        target = urljoin(url, location)
+                        if is_challenge_url(target):
+                            raise DownloadBlockedError(
+                                "Banrep pidió una verificación antibot (Radware) y no se elude; "
+                                "importe un PDF obtenido legítimamente o reintente más tarde."
+                            )
                         try:
-                            url = _official_url(urljoin(url, location), download=True)
-                        except SourceError as exc:
+                            url = download_hop_url(target)
+                        except UnsafeUrlError as exc:
                             raise DownloadError(
                                 "La redirección apunta a un destino no autorizado."
                             ) from exc
@@ -176,6 +187,10 @@ class PdfDownloader:
         encoding = response.headers.get("content-encoding", "identity").lower()
         if encoding not in {"identity", "gzip"}:
             raise DownloadError("La compresión HTTP de la respuesta no está admitida.")
+        if mime == "text/html":
+            raise DownloadError(
+                "La fuente devolvió HTML en lugar del PDF (posible verificación antibot)."
+            )
         if mime and mime not in {"application/pdf", "application/octet-stream"}:
             raise DownloadError("La respuesta no declara un documento PDF.")
         try:
