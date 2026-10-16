@@ -56,6 +56,14 @@ def test_only_main_report_and_separate_dates():
         ),
         history(row("Informe de Política Monetaria - julio de 2026", "/es/x", "file:///x")),
         history(row("Informe de Política Monetaria - julio de 2026", "/es/x", "")),
+        history(row("Informe de Política Monetaria - julio de 2026", "/es/x", "#")),
+        history(row("Informe de Política Monetaria - julio de 2026", "/es/x", "/")),
+        history(
+            row("Informe de Política Monetaria - julio de 2026", "/es/x", "https://doi.org:bad/x")
+        ),
+        history(
+            row("Informe de Política Monetaria (IPM) julio de 2026", "/es/x", "https://doi.org/x")
+        ),
     ],
 )
 def test_reject_ambiguous_or_blocked_html(html):
@@ -92,3 +100,17 @@ def test_unverified_redirect_is_rejected():
     ) as client:
         with pytest.raises(SourceError, match="redirección"):
             BanrepSource(client).discover(1)
+
+
+def test_report_with_em_dash_is_not_silently_skipped():
+    reports = parse_history(
+        history(row("Informe de Política Monetaria — julio de 2026", "/es/x", "https://doi.org/x")),
+        "2026-10-15T00:00:00+00:00",
+    )
+    assert reports[0].report_id == "ipm-2026-07"
+
+
+def test_client_cannot_follow_redirects():
+    with httpx.Client(follow_redirects=True) as client:
+        with pytest.raises(ValueError, match="redirecciones"):
+            BanrepSource(client)

@@ -27,7 +27,7 @@ MONTHS = {
     "diciembre": 12,
 }
 MAIN_TITLE = re.compile(
-    r"^Informe de Política Monetaria\s*[-–:]\s*"
+    r"^Informe de Política Monetaria\s*[-–—:]\s*"
     r"(enero|febrero|marzo|abril|mayo|junio|julio|agosto|septiembre|octubre|noviembre|diciembre)"
     r"\s+(?:de\s+)?(\d{4})$",
     re.IGNORECASE,
@@ -65,8 +65,17 @@ def _official_url(href: str, *, download: bool = False) -> str:
         allowed |= {"doi.org", "repositorio.banrep.gov.co"}
     if parts.scheme != "https" or parts.hostname not in allowed or parts.username or parts.password:
         raise SourceError("La fuente proporcionó una URL fuera de los dominios autorizados.")
-    if not parts.path or parts.port is not None:
+    try:
+        invalid_port = parts.port is not None
+    except ValueError as exc:
+        raise SourceError("La fuente proporcionó un puerto no válido.") from exc
+    if not parts.path or invalid_port:
         raise SourceError("La fuente proporcionó una URL no válida.")
+    if download and not (
+        (parts.hostname == "doi.org" and parts.path.strip("/"))
+        or (parts.hostname != "doi.org" and parts.path.lower().endswith(".pdf"))
+    ):
+        raise SourceError("La descarga principal no apunta a un DOI ni a un archivo PDF.")
     return url
 
 
@@ -99,6 +108,8 @@ def parse_history(html: str, checked_at: str) -> list[ReportRecord]:
         title = link.get_text(" ", strip=True)
         match = MAIN_TITLE.fullmatch(title)
         if not match:
+            if title.casefold().startswith("informe de política monetaria"):
+                raise SourceError(f"No se puede clasificar el informe principal «{title}».")
             continue
         month, year = MONTHS[match[1].lower()], int(match[2])
         if period != (year, month):
@@ -137,6 +148,8 @@ class BanrepSource:
     """Consulta únicamente páginas públicas, sin eludir controles de acceso."""
 
     def __init__(self, client: httpx.Client | None = None):
+        if client is not None and client.follow_redirects:
+            raise ValueError("El cliente de la fuente no debe seguir redirecciones.")
         self.client = client or httpx.Client(
             timeout=httpx.Timeout(20, connect=5),
             follow_redirects=False,
@@ -155,8 +168,10 @@ class BanrepSource:
             except httpx.HTTPError as exc:
                 raise SourceError("No se pudo consultar el histórico oficial.") from exc
             if (
-                response.url.host not in {"www.banrep.gov.co", "banrep.gov.co"}
+                response.url.scheme != "https"
+                or response.url.host not in {"www.banrep.gov.co", "banrep.gov.co"}
                 or response.is_redirect
+                or response.history
             ):
                 raise SourceError("La fuente respondió con una redirección no verificada.")
             try:

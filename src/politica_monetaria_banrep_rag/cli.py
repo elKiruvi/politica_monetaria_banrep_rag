@@ -16,16 +16,19 @@ def main() -> None:
     discover = subcommands.add_parser(
         "descubrir", help="Verifica los informes principales oficiales"
     )
-    discover.add_argument(
-        "--max-reports", type=int, default=int(os.getenv("BANREP_MAX_REPORTS", "12"))
-    )
+    discover.add_argument("--max-reports", type=int, help="Cantidad de informes (por defecto: 12)")
     discover.add_argument("--json", action="store_true", help="Emite metadatos en JSON")
     args = parser.parse_args()
     if args.command == "diagnostico":
         print("Base instalada. La sincronización y las consultas aún no están disponibles.")
     elif args.command == "descubrir":
         try:
-            reports = BanrepSource().discover(args.max_reports)
+            max_reports = (
+                args.max_reports
+                if args.max_reports is not None
+                else int(os.getenv("BANREP_MAX_REPORTS", "12"))
+            )
+            reports = BanrepSource().discover(max_reports)
         except (SourceError, ValueError) as exc:
             parser.exit(1, f"Error de descubrimiento: {exc}\n")
         if args.json:
