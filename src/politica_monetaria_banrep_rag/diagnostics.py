@@ -179,7 +179,7 @@ def _download(report: ReportRecord) -> dict[str, object]:
 def _cell(value: object) -> str:
     """Escapa texto externo para que no altere la tabla Markdown del resumen."""
     text = " ".join(str(value or "").split())
-    for char, escaped in (
+    replacements = (
         ("\\", "\\\\"),
         ("|", "\\|"),
         ("<", "&lt;"),
@@ -187,9 +187,8 @@ def _cell(value: object) -> str:
         ("[", "\\["),
         ("]", "\\]"),
         ("`", "\\`"),
-        ("*", "\\*"),
-        ("_", "\\_"),
-    ):
+    )
+    for char, escaped in replacements:
         text = text.replace(char, escaped)
     return text
 
