@@ -21,7 +21,7 @@ def test_descubrir_json_with_explicit_n(capsys, monkeypatch):
         assert maximum == 1
         return [
             ReportRecord(
-                "ipm-2026-07",
+                "ipm-2030-05",
                 "Informe de prueba",
                 "main_report",
                 "es",
@@ -37,7 +37,7 @@ def test_descubrir_json_with_explicit_n(capsys, monkeypatch):
 
     monkeypatch.setattr("politica_monetaria_banrep_rag.cli.BanrepSource.discover", discover)
     main()
-    assert json.loads(capsys.readouterr().out)[0]["report_id"] == "ipm-2026-07"
+    assert json.loads(capsys.readouterr().out)[0]["report_id"] == "ipm-2030-05"
 
 
 def test_descubrir_reports_source_error(capsys, monkeypatch):

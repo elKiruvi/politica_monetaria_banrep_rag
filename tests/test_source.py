@@ -143,6 +143,29 @@ def test_page_with_only_complements_continues():
         assert BanrepSource(client).discover(1)[0].report_id == "ipm-2026-07"
 
 
+def test_archive_changes_mid_pagination_fail_closed():
+    first_page_calls = 0
+
+    def respond(request: httpx.Request) -> httpx.Response:
+        nonlocal first_page_calls
+        if request.url.params:
+            return httpx.Response(200, text=history(april(), "2026 - abril"))
+        first_page_calls += 1
+        if first_page_calls == 1:
+            return httpx.Response(200, text=history(july()))
+        newer = row(
+            "Informe de Política Monetaria - octubre de 2026",
+            "/es/informe/octubre",
+            "https://doi.org/octubre",
+        )
+        return httpx.Response(200, text=history(newer, "2026 - octubre"))
+
+    with httpx.Client(transport=httpx.MockTransport(respond)) as client:
+        with pytest.raises(SourceError, match="cambió durante"):
+            BanrepSource(client).discover(2)
+    assert first_page_calls == 2
+
+
 def test_blocked_next_page_does_not_return_partial_window():
     def respond(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
