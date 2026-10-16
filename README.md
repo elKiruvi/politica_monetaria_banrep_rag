@@ -45,6 +45,10 @@ El periodo se identifica con dos evidencias (portada con la serie junto al perio
 
 El diagnóstico de investigación, incluido el bloqueo de las consultas paginadas a la fuente, está en [docs/arquitectura/diagnostico_inicial.md](docs/arquitectura/diagnostico_inicial.md). Las entregas pendientes se describen en los issues. No se exige ningún proveedor comercial para instalar la base.
 
+## Estado y contribución
+
+El estado detallado, la evidencia de acceso a las fuentes y el siguiente paso están en [docs/estado_desarrollo.md](docs/estado_desarrollo.md). Las normas para trabajar en el repositorio (incluidos agentes como Claude Code) están en [CLAUDE.md](CLAUDE.md).
+
 ## Derechos
 
 La licencia MIT cubre solo el código original de este repositorio. Los informes, marcas y demás material del Banco conservan sus respectivos derechos; este repositorio no incluye sus PDF.
