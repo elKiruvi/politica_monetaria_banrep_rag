@@ -27,6 +27,42 @@ def _local_failure(exc: OSError) -> str:
     return f"fallo del sistema local{target} ({type(exc).__name__})."
 
 
+_PLAN_LABELS = {
+    "nuevo": "nuevo, se descargará",
+    "sin_cambios": "sin cambios, no se descargará",
+    "revalidar": "verificación vencida, se volverá a descargar",
+    "metadatos_o_archivo_cambiados": "metadatos o archivo local cambiados, se descargará",
+}
+
+
+def _non_negative(value: str) -> float:
+    try:
+        number = float(value)
+    except ValueError:
+        raise argparse.ArgumentTypeError("debe ser un número") from None
+    if not 0 <= number <= 3650:
+        raise argparse.ArgumentTypeError("debe estar entre 0 y 3650")
+    return number
+
+
+def _pause(value: str) -> float:
+    number = _non_negative(value)
+    if number > 600:
+        raise argparse.ArgumentTypeError("debe estar entre 0 y 600 segundos")
+    return number
+
+
+def _print_plan(plan: dict[str, object]) -> None:
+    window = plan["window"]
+    leaving = plan["leaving"]
+    assert isinstance(window, list) and isinstance(leaving, list)
+    print("Simulación (no se descargó ni modificó nada):")
+    for row in window:
+        print(f"  {row['report_id']} — {_PLAN_LABELS[row['status']]}")
+    for report_id in leaving:
+        print(f"  {report_id} — sale de la ventana activa (el PDF se conserva)")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="banrep-rag", description="Consulta local de informes de política monetaria."
@@ -54,6 +90,21 @@ def main() -> None:
     sync.add_argument("--max-reports", help="Cantidad de informes (por defecto: 12)")
     sync.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
     sync.add_argument("--fuente", choices=SOURCES, help="Origen de los metadatos")
+    sync.add_argument(
+        "--dry-run", action="store_true", help="Muestra qué cambiaría sin descargar nada"
+    )
+    sync.add_argument(
+        "--revalidar-dias",
+        type=_non_negative,
+        default=30.0,
+        help="Días tras los cuales se vuelve a descargar un PDF sin cambios (por defecto: 30)",
+    )
+    sync.add_argument(
+        "--pausa",
+        type=_pause,
+        default=10.0,
+        help="Segundos de espera entre descargas reales (por defecto: 10)",
+    )
     args = parser.parse_args()
     if args.command == "diagnostico":
         print("La sincronización del catálogo está disponible; las consultas aún no.")
@@ -92,8 +143,16 @@ def main() -> None:
                     downloader = PdfDownloader()
                     stack.callback(downloader.client.close)
                     catalog = Catalog(
-                        root, source, downloader, progress=lambda text: print(text, file=sys.stderr)
+                        root,
+                        source,
+                        downloader,
+                        progress=lambda text: print(text, file=sys.stderr),
+                        revalidate_seconds=args.revalidar_dias * 86400,
+                        download_pause=args.pausa,
                     )
+                    if args.dry_run:
+                        _print_plan(catalog.plan(max_reports))
+                        return
                     snapshot_id = catalog.sync(max_reports)
             except OSError as exc:
                 parser.exit(1, f"Error de sincronización: {_local_failure(exc)}\n")

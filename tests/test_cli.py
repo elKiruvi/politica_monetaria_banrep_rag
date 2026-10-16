@@ -221,3 +221,45 @@ def test_invalid_source_name_is_rejected_in_spanish(capsys, monkeypatch):
         main()
     assert error.value.code == 2
     assert "«crossref» o «historico»" in capsys.readouterr().err
+
+
+def test_sincronizar_dry_run_prints_plan_without_downloading(tmp_path, capsys, monkeypatch):
+    class Source:
+        def __init__(self):
+            self.client = httpx.Client(transport=httpx.MockTransport(lambda _: pytest.fail()))
+
+        def discover(self, count):
+            return [
+                ReportRecord(
+                    "ipm-2026-07", "Informe de Política Monetaria - julio de 2026", "main_report",
+                    "es", "2026-07", None, None, "2026-10-16", None,
+                    "https://www.banrep.gov.co/es/informe/julio", "https://doi.org/rh7c",
+                )
+            ]  # fmt: skip
+
+    monkeypatch.setattr("politica_monetaria_banrep_rag.cli.BanrepSource", Source)
+    monkeypatch.setattr(
+        "sys.argv",
+        ["banrep-rag", "sincronizar", "--max-reports", "1", "--data-dir", str(tmp_path / "d"),
+         "--dry-run"],
+    )  # fmt: skip
+    main()
+    out = capsys.readouterr().out
+    assert "Simulación" in out and "ipm-2026-07 — nuevo, se descargará" in out
+    assert not (tmp_path / "d").exists()
+
+
+@pytest.mark.parametrize("value", ["-1", "abc", "inf"])
+def test_sincronizar_rejects_invalid_pause(capsys, monkeypatch, value):
+    monkeypatch.setattr("sys.argv", ["banrep-rag", "sincronizar", "--pausa", value])
+    with pytest.raises(SystemExit) as error:
+        main()
+    assert error.value.code == 2
+
+
+def test_sincronizar_rejects_pause_above_limit(capsys, monkeypatch):
+    monkeypatch.setattr("sys.argv", ["banrep-rag", "sincronizar", "--pausa", "601"])
+    with pytest.raises(SystemExit) as error:
+        main()
+    assert error.value.code == 2
+    assert "entre 0 y 600" in capsys.readouterr().err
