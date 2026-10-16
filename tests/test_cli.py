@@ -51,3 +51,15 @@ def test_descubrir_reports_source_error(capsys, monkeypatch):
         main()
     assert error.value.code == 1
     assert "Bloqueo" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("argv", [["descubrir"], ["descubrir", "--max-reports", "xyz"]])
+def test_invalid_count_is_reported_in_spanish(capsys, monkeypatch, argv):
+    monkeypatch.setenv("BANREP_MAX_REPORTS", "abc")
+    monkeypatch.setattr("sys.argv", ["banrep-rag", *argv])
+    with pytest.raises(SystemExit) as error:
+        main()
+    assert error.value.code == 2
+    message = capsys.readouterr().err
+    assert "la cantidad de informes debe ser un número entero" in message
+    assert "invalid literal" not in message
