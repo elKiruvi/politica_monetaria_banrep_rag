@@ -47,9 +47,11 @@ def pdf_bytes():
     return output.getvalue()
 
 
-def make_catalog(tmp_path, source, respond):
+def make_catalog(tmp_path, source, respond, **options):
     client = httpx.Client(transport=httpx.MockTransport(respond))
-    return Catalog(tmp_path / "estado", source, PdfDownloader(client, attempts=1)), client
+    options.setdefault("download_pause", 0)
+    catalog = Catalog(tmp_path / "estado", source, PdfDownloader(client, attempts=1), **options)
+    return catalog, client
 
 
 def test_sync_activates_only_complete_window_and_is_idempotent(tmp_path, pdf_bytes):
@@ -78,7 +80,10 @@ def test_correction_and_variable_window_preserve_old_snapshot(tmp_path, pdf_byte
     source = Source([report(7), report(4)])
     current_pdf = [pdf_bytes]
     catalog, client = make_catalog(
-        tmp_path, source, lambda _: httpx.Response(200, stream=httpx.ByteStream(current_pdf[0]))
+        tmp_path,
+        source,
+        lambda _: httpx.Response(200, stream=httpx.ByteStream(current_pdf[0])),
+        revalidate_seconds=0,
     )
     with client:
         original = catalog.sync(2)
@@ -247,3 +252,166 @@ def test_total_deadline_stops_before_activation(tmp_path, pdf_bytes):
 def test_invalid_total_deadline_is_rejected(tmp_path, limit):
     with pytest.raises(ValueError, match="plazo total"):
         Catalog(tmp_path, Source([]), PdfDownloader(), max_seconds=limit)
+
+
+class Clock:
+    def __init__(self):
+        self.now = 1_800_000_000.0
+
+    def __call__(self):
+        return self.now
+
+
+def counting(pdf_bytes, calls, status=200):
+    def respond(request):
+        calls.append(str(request.url))
+        if status != 200:
+            return httpx.Response(status, headers={"location": "https://validate.perfdrive.com/"})
+        return httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+
+    return respond
+
+
+def test_unchanged_window_is_reused_without_network(tmp_path, pdf_bytes):
+    calls, messages, clock = [], [], Clock()
+    catalog, client = make_catalog(
+        tmp_path, Source([report(7), report(4)]), counting(pdf_bytes, calls),
+        wall_clock=clock, progress=messages.append,
+    )  # fmt: skip
+    with client:
+        first = catalog.sync(2)
+        clock.now += 86400
+        assert catalog.sync(2) == first
+    assert len(calls) == 2
+    assert sum(m.startswith("Sin cambios") for m in messages) == 2
+    registry = json.loads((catalog.root / "acquisitions.json").read_text())
+    assert sorted(registry["entries"]) == ["ipm-2026-04", "ipm-2026-07"]
+
+
+def test_expired_verification_downloads_again_and_keeps_registry_compact(tmp_path, pdf_bytes):
+    calls, clock = [], Clock()
+    catalog, client = make_catalog(
+        tmp_path, Source([report(7)]), counting(pdf_bytes, calls), wall_clock=clock
+    )
+    with client:
+        first = catalog.sync(1)
+        clock.now += 31 * 86400
+        assert catalog.sync(1) == first
+    assert len(calls) == 2
+    entries = json.loads((catalog.root / "acquisitions.json").read_text())["entries"]
+    assert len(entries["ipm-2026-07"]) == 1
+    assert entries["ipm-2026-07"][0]["verified_ts"] == clock.now
+
+
+def test_metadata_change_forces_revalidation(tmp_path, pdf_bytes):
+    calls = []
+    source = Source([report(7)])
+    catalog, client = make_catalog(tmp_path, source, counting(pdf_bytes, calls))
+    with client:
+        first = catalog.sync(1)
+        source.reports = [replace(report(7), source_updates=("correction:2026-10-20",))]
+        second = catalog.sync(1)
+    assert len(calls) == 2
+    assert first != second
+
+
+def test_blocked_revalidation_keeps_last_verified_pdf(tmp_path, pdf_bytes):
+    calls, messages, clock = [], [], Clock()
+    status = [200]
+
+    def respond(request):
+        return counting(pdf_bytes, calls, status[0])(request)
+
+    catalog, client = make_catalog(
+        tmp_path, Source([report(7)]), respond, wall_clock=clock, progress=messages.append
+    )
+    with client:
+        first = catalog.sync(1)
+        clock.now += 31 * 86400
+        status[0] = 302
+        assert catalog.sync(1) == first
+    assert any("no se pudo revalidar" in m for m in messages)
+
+
+def test_tampered_local_file_is_downloaded_again(tmp_path, pdf_bytes):
+    calls = []
+    catalog, client = make_catalog(tmp_path, Source([report(7)]), counting(pdf_bytes, calls))
+    with client:
+        catalog.sync(1)
+        stored = next((catalog.root / "raw").glob("*.pdf"))
+        stored.write_bytes(b"%PDF-alterado")
+        catalog.sync(1)
+    assert len(calls) == 2
+    assert stored.read_bytes() == pdf_bytes
+
+
+def test_pause_only_between_real_downloads(tmp_path, pdf_bytes):
+    pauses = []
+    catalog, client = make_catalog(
+        tmp_path, Source([report(7), report(4), report(1)]), counting(pdf_bytes, []),
+        download_pause=10, sleep=pauses.append,
+    )  # fmt: skip
+    with client:
+        catalog.sync(3)
+        catalog.sync(3)
+    assert pauses == [10, 10]
+
+
+@pytest.mark.parametrize(
+    "content",
+    [
+        "no es json",
+        json.dumps({"version": 9, "entries": {}}),
+        json.dumps({"version": 1, "entries": {"ipm-2026-07": [{"path": "../../etc/passwd"}]}}),
+    ],
+)
+def test_damaged_registry_fails_without_touching_pointer(tmp_path, pdf_bytes, content):
+    catalog, client = make_catalog(tmp_path, Source([report(7)]), counting(pdf_bytes, []))
+    with client:
+        first = catalog.sync(1)
+        (catalog.root / "acquisitions.json").write_text(content)
+        with pytest.raises(CatalogError, match="registro local"):
+            catalog.sync(1)
+    assert catalog.current()[0] == first
+
+
+def test_snapshot_records_selection_and_acquisition(tmp_path, pdf_bytes):
+    catalog, client = make_catalog(tmp_path, Source([report(7)]), counting(pdf_bytes, []))
+    with client:
+        catalog.sync(1)
+    _, snapshot = catalog.current()
+    assert snapshot["version"] == 2
+    assert snapshot["selection"] == {"mode": "latest_n", "max_reports": 1}
+    assert snapshot["reports"][0]["acquisition"] == {"method": "download"}
+    assert "verified_at" not in snapshot["reports"][0]["pdf"]
+
+
+def test_plan_reports_changes_without_network_or_writes(tmp_path, pdf_bytes):
+    calls, clock = [], Clock()
+    source = Source([report(7), report(4)])
+    catalog, client = make_catalog(tmp_path, source, counting(pdf_bytes, calls), wall_clock=clock)
+    with client:
+        catalog.sync(2)
+    before = sorted(path.name for path in catalog.root.rglob("*"))
+    source.reports = [report(10), report(7)]
+    plan = catalog.plan(2)
+    assert plan == {
+        "window": [
+            {"report_id": "ipm-2026-10", "title": "Informe de Política Monetaria - 10",
+             "status": "nuevo"},
+            {"report_id": "ipm-2026-07", "title": "Informe de Política Monetaria - 7",
+             "status": "sin_cambios"},
+        ],
+        "leaving": ["ipm-2026-04"],
+    }  # fmt: skip
+    clock.now += 31 * 86400
+    assert catalog.plan(2)["window"][1]["status"] == "revalidar"
+    assert sorted(path.name for path in catalog.root.rglob("*")) == before
+    assert len(calls) == 2
+
+
+def test_plan_on_empty_directory_does_not_create_it(tmp_path):
+    catalog, client = make_catalog(tmp_path, Source([report(7)]), lambda _: pytest.fail())
+    with client:
+        assert catalog.plan(1)["window"][0]["status"] == "nuevo"
+    assert not catalog.root.exists()

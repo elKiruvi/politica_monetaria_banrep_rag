@@ -8,10 +8,11 @@ import sys
 import tempfile
 import time
 from collections.abc import Callable
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import BinaryIO
 
-from politica_monetaria_banrep_rag.download import PdfDownloader
+from politica_monetaria_banrep_rag.download import DownloadError, PdfDownloader
 from politica_monetaria_banrep_rag.source import (
     ReportRecord,
     ReportSource,
@@ -19,9 +20,25 @@ from politica_monetaria_banrep_rag.source import (
     _official_url,
 )
 
+_PDF_FIELDS = ("path", "sha256", "bytes", "pages", "final_url", "mime_type")
+_REGISTRY_FIELDS = (
+    *_PDF_FIELDS,
+    "download_url",
+    "metadata_fingerprint",
+    "verified_at",
+    "verified_ts",
+)
+
 
 class CatalogError(Exception):
     """La ventana o el estado local no permiten activar un snapshot."""
+
+
+def _timestamp(entry: dict[str, object]) -> float:
+    value = entry["verified_ts"]
+    if isinstance(value, bool) or not isinstance(value, int | float):
+        raise CatalogError("El registro local de descargas tiene una fecha no válida.")
+    return float(value)
 
 
 def _json_bytes(value: object) -> bytes:
@@ -80,15 +97,25 @@ class Catalog:
         progress: Callable[[str], None] | None = None,
         max_seconds: float = 1800,
         clock: Callable[[], float] = time.monotonic,
+        revalidate_seconds: float = 30 * 86400,
+        download_pause: float = 10.0,
+        wall_clock: Callable[[], float] = time.time,
+        sleep: Callable[[float], None] = time.sleep,
     ):
         if not 0 < max_seconds < float("inf"):
             raise ValueError("El plazo total de sincronización debe ser positivo.")
+        if not 0 <= revalidate_seconds < float("inf") or not 0 <= download_pause <= 600:
+            raise ValueError("La revalidación y la pausa entre descargas deben ser finitas.")
         self.root = root
         self.source = source
         self.downloader = downloader
         self.progress = progress or (lambda _: None)
         self.max_seconds = max_seconds
         self.clock = clock
+        self.revalidate_seconds = revalidate_seconds
+        self.download_pause = download_pause
+        self.wall_clock = wall_clock
+        self.sleep = sleep
 
     def current(self) -> tuple[str, dict[str, object]] | None:
         pointer = self.root / "current.json"
@@ -107,7 +134,9 @@ class Catalog:
             if hashlib.sha256(data).hexdigest() != snapshot_id:
                 raise ValueError("Snapshot alterado")
             snapshot = json.loads(data)
-            if snapshot.get("version") != 1 or not isinstance(snapshot.get("reports"), list):
+            if snapshot.get("version") not in {1, 2} or not isinstance(
+                snapshot.get("reports"), list
+            ):
                 raise ValueError("Formato de snapshot inválido")
             return snapshot_id, snapshot
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
@@ -132,44 +161,66 @@ class Catalog:
             self._validate_window(reports, max_reports)
             records: list[dict[str, object]] = []
             raw_dir = self.root / "raw"
+            registry = self._load_registry()
+            downloaded = False
             for position, report in enumerate(reports, start=1):
                 if self.clock() >= deadline:
                     raise CatalogError(
                         "La sincronización superó el plazo total; se conserva el catálogo anterior."
                     )
-                self.progress(f"Descargando {position}/{len(reports)}: {report.report_id}…")
-                result = self.downloader.download(report, raw_dir)
-                expected_name = f"{report.report_id}-{result.sha256}.pdf"
-                if (
-                    not re.fullmatch(r"[0-9a-f]{64}", result.sha256)
-                    or result.path.name != expected_name
-                    or result.path.parent.resolve() != raw_dir.resolve()
-                    or result.path.is_symlink()
-                    or not result.path.is_file()
-                ):
-                    raise CatalogError("La descarga no produjo un PDF dentro del almacén local.")
-                with result.path.open("rb") as handle:
-                    digest = hashlib.file_digest(handle, "sha256").hexdigest()
-                if digest != result.sha256 or result.path.stat().st_size != result.bytes_count:
-                    raise CatalogError("El PDF cambió antes de registrar el snapshot.")
                 metadata = report.to_dict()
                 metadata.pop("discovered_at")  # No cambiar la revisión solo por una nueva consulta.
+                fingerprint = hashlib.sha256(_json_bytes(metadata)).hexdigest()
+                entries = registry.setdefault(report.report_id, [])
+                previous = self._reusable(entries, report.download_url, fingerprint, raw_dir)
+                fresh = previous is not None and (
+                    self.wall_clock() - _timestamp(previous) < self.revalidate_seconds
+                )
+                label = f"{position}/{len(reports)}: {report.report_id}"
+                if fresh:
+                    assert previous is not None
+                    self.progress(f"Sin cambios {label} (verificado el {previous['verified_at']}).")
+                    pdf = previous
+                else:
+                    if downloaded and self.download_pause:
+                        self.sleep(self.download_pause)  # Ritmo respetuoso con la fuente.
+                    self.progress(f"Descargando {label}…")
+                    downloaded = True
+                    try:
+                        pdf = self._download(report, raw_dir, fingerprint)
+                    except DownloadError:
+                        if previous is None:
+                            raise
+                        self.progress(
+                            f"Aviso: no se pudo revalidar {report.report_id}; se conserva el PDF "
+                            f"verificado el {previous['verified_at']}."
+                        )
+                        pdf = previous
+                    else:
+                        # Una revalidación con los mismos bytes renueva la entrada existente.
+                        entries[:] = [
+                            entry
+                            for entry in entries
+                            if (entry["sha256"], entry["download_url"])
+                            != (pdf["sha256"], pdf["download_url"])
+                        ] + [pdf]
                 records.append(
                     {
                         "report": metadata,
-                        "pdf": {
-                            "path": f"raw/{expected_name}",
-                            "sha256": result.sha256,
-                            "bytes": result.bytes_count,
-                            "pages": result.pages_count,
-                            "final_url": result.final_url,
-                            "mime_type": result.mime_type,
-                        },
+                        "pdf": {key: pdf[key] for key in _PDF_FIELDS},
+                        "acquisition": {"method": "download"},
                     }
                 )
             # Los nombres de los PDF deben ser duraderos antes del puntero.
             _sync_directory(raw_dir)
-            data = _json_bytes({"version": 1, "reports": records})
+            self._save_registry(registry)
+            data = _json_bytes(
+                {
+                    "version": 2,
+                    "selection": {"mode": "latest_n", "max_reports": max_reports},
+                    "reports": records,
+                }
+            )
             snapshot_id = hashlib.sha256(data).hexdigest()
             snapshot_path = self.root / "snapshots" / f"{snapshot_id}.json"
             if snapshot_path.exists():
@@ -188,6 +239,116 @@ class Catalog:
                     self.root / "current.json", _json_bytes({"version": 1, "snapshot": snapshot_id})
                 )
             return snapshot_id
+
+    def plan(self, max_reports: int = 12) -> dict[str, object]:
+        """Describe qué haría ``sync`` sin descargar ni escribir nada (``--dry-run``)."""
+        reports = self.source.discover(max_reports)
+        self._validate_window(reports, max_reports)
+        exists = self.root.exists()
+        registry = self._load_registry() if exists else {}
+        active = self.current() if exists else None
+        raw_dir = self.root / "raw"
+        rows = []
+        for report in reports:
+            metadata = report.to_dict()
+            metadata.pop("discovered_at")
+            fingerprint = hashlib.sha256(_json_bytes(metadata)).hexdigest()
+            entries = registry.get(report.report_id, [])
+            previous = self._reusable(entries, report.download_url, fingerprint, raw_dir)
+            if previous is not None:
+                age = self.wall_clock() - _timestamp(previous)
+                status = "sin_cambios" if age < self.revalidate_seconds else "revalidar"
+            else:
+                status = "metadatos_o_archivo_cambiados" if entries else "nuevo"
+            rows.append({"report_id": report.report_id, "title": report.title, "status": status})
+        window = {report.report_id for report in reports}
+        leaving = []
+        active_records = active[1]["reports"] if active is not None else []
+        assert isinstance(active_records, list)
+        for record in active_records:
+            report_id = record["report"]["report_id"]
+            if report_id not in window:
+                leaving.append(report_id)
+        return {"window": rows, "leaving": leaving}
+
+    def _download(self, report: ReportRecord, raw_dir: Path, fingerprint: str) -> dict[str, object]:
+        result = self.downloader.download(report, raw_dir)
+        expected_name = f"{report.report_id}-{result.sha256}.pdf"
+        if (
+            not re.fullmatch(r"[0-9a-f]{64}", result.sha256)
+            or result.path.name != expected_name
+            or result.path.parent.resolve() != raw_dir.resolve()
+        ):
+            raise CatalogError("La descarga no produjo un PDF dentro del almacén local.")
+        self._verify_local(result.path, result.sha256, result.bytes_count)
+        now = self.wall_clock()
+        return {
+            "path": f"raw/{expected_name}",
+            "sha256": result.sha256,
+            "bytes": result.bytes_count,
+            "pages": result.pages_count,
+            "final_url": result.final_url,
+            "mime_type": result.mime_type,
+            "download_url": report.download_url,
+            "metadata_fingerprint": fingerprint,
+            "verified_at": datetime.fromtimestamp(now, UTC).isoformat(timespec="seconds"),
+            "verified_ts": now,
+        }
+
+    @staticmethod
+    def _verify_local(path: Path, sha256: str, size: int) -> None:
+        if path.is_symlink() or not path.is_file():
+            raise CatalogError("La descarga no produjo un PDF dentro del almacén local.")
+        with path.open("rb") as handle:
+            digest = hashlib.file_digest(handle, "sha256").hexdigest()
+        if digest != sha256 or path.stat().st_size != size:
+            raise CatalogError("El PDF cambió antes de registrar el snapshot.")
+
+    def _reusable(
+        self, entries: list[dict[str, object]], url: str, fingerprint: str, raw_dir: Path
+    ) -> dict[str, object] | None:
+        """Última descarga verificada de la misma URL y metadatos cuyo archivo sigue intacto."""
+        for entry in reversed(entries):
+            if entry.get("download_url") != url or entry.get("metadata_fingerprint") != fingerprint:
+                continue
+            path = self.root / str(entry["path"])
+            if path.parent.resolve() != raw_dir.resolve():
+                return None
+            try:
+                self._verify_local(path, str(entry["sha256"]), int(str(entry["bytes"])))
+            except (CatalogError, OSError):
+                return None  # Archivo ausente o alterado: hay que descargarlo de nuevo.
+            return entry
+        return None
+
+    def _load_registry(self) -> dict[str, list[dict[str, object]]]:
+        path = self.root / "acquisitions.json"
+        if not path.exists():
+            return {}
+        try:
+            data = json.loads(path.read_bytes())
+            entries = data["entries"]
+            if data.get("version") != 1 or not isinstance(entries, dict):
+                raise ValueError("Formato inválido")
+            for report_id, items in entries.items():
+                if not re.fullmatch(r"ipm-\d{4}-\d{2}", report_id) or not isinstance(items, list):
+                    raise ValueError("Formato inválido")
+                for item in items:
+                    if not isinstance(item, dict) or set(_REGISTRY_FIELDS) - set(item):
+                        raise ValueError("Formato inválido")
+                    if not re.fullmatch(rf"raw/{report_id}-[0-9a-f]{{64}}\.pdf", str(item["path"])):
+                        raise ValueError("Ruta inválida")
+            return entries
+        except (OSError, ValueError, KeyError, TypeError) as exc:
+            raise CatalogError(
+                "El registro local de descargas está dañado; revíselo o elimínelo para "
+                "volver a descargar todo."
+            ) from exc
+
+    def _save_registry(self, registry: dict[str, list[dict[str, object]]]) -> None:
+        _atomic_write(
+            self.root / "acquisitions.json", _json_bytes({"version": 1, "entries": registry})
+        )
 
     @staticmethod
     def _validate_window(reports: list[ReportRecord], count: int) -> None:
