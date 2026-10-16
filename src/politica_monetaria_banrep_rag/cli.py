@@ -12,6 +12,8 @@ from politica_monetaria_banrep_rag.catalog import Catalog, CatalogError
 from politica_monetaria_banrep_rag.crossref import CrossrefReportSource
 from politica_monetaria_banrep_rag.download import DownloadError, PdfDownloader
 from politica_monetaria_banrep_rag.importer import ImportFileError
+from politica_monetaria_banrep_rag.layout import LayoutError
+from politica_monetaria_banrep_rag.processed_store import ProcessedStore
 from politica_monetaria_banrep_rag.source import BanrepSource, ReportSource, SourceError
 
 SOURCES = ("crossref", "historico")
@@ -124,6 +126,51 @@ def _import(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         parser.exit(1, f"Error de importación: {exc}\n")
 
 
+def _process(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    root = _data_dir(args)
+    try:
+        catalog = _offline_catalog(root)
+        with catalog.source.client, catalog.downloader.client:
+            active = catalog.current()
+        if active is None:
+            parser.exit(1, "Error: no hay catálogo activo; sincronice o importe informes.\n")
+        records = active[1]["reports"]
+        assert isinstance(records, list)
+        store = ProcessedStore(root)
+        summaries, failures = store.ensure(
+            records,
+            force=args.forzar,
+            workers=args.procesos,
+            progress=lambda text: print(text, file=sys.stderr),
+        )
+    except LayoutError as exc:
+        parser.exit(1, f"Error de procesamiento: {exc}\n")
+    except OSError as exc:
+        parser.exit(1, f"Error de procesamiento: {_local_failure(exc)}\n")
+    except CatalogError as exc:
+        parser.exit(1, f"Error de procesamiento: {exc}\n")
+    if args.json:
+        rows = [{**s.__dict__, "path": str(s.path)} for s in summaries]
+        print(json.dumps(rows, ensure_ascii=False, indent=2))
+        if failures:
+            parser.exit(1, "".join(f"Error: {r}: {why}\n" for r, why in failures))
+        return
+    for s in summaries:
+        state = "degradado: " + " ".join(s.warnings) if s.degraded else "calidad aceptable"
+        origin = "caché" if s.cached else "procesado ahora"
+        print(
+            f"{s.report_id} — {s.pages} págs., {s.chunks} fragmentos, {s.tables} cuadros "
+            f"({s.tables_failed} sin reconstruir), {s.ligatures_repaired} ligaduras reparadas; "
+            f"{state} ({origin})"
+        )
+    if failures:
+        parser.exit(
+            1,
+            "".join(f"Error de procesamiento en {r}: {why}\n" for r, why in failures)
+            + ("Los demás informes se procesaron y quedaron guardados.\n" if summaries else ""),
+        )
+
+
 def _status(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     root = _data_dir(args)
     try:
@@ -230,6 +277,16 @@ def main() -> None:
         action="store_true",
         help="Sustituye un PDF importado antes para el mismo periodo",
     )
+    process_cmd = subcommands.add_parser(
+        "procesar", help="Extrae texto, cuadros y fragmentos citables del catálogo activo"
+    )
+    process_cmd.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
+    process_cmd.add_argument("--forzar", action="store_true", help="Ignora la caché")
+    process_cmd.add_argument(
+        "--procesos", type=int, default=1, choices=range(1, 9), metavar="N",
+        help="Procesos en paralelo (1 a 8; por defecto 1)",
+    )  # fmt: skip
+    process_cmd.add_argument("--json", action="store_true", help="Emite el resumen en JSON")
     status_cmd = subcommands.add_parser("estado", help="Muestra el catálogo local activo")
     status_cmd.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
     status_cmd.add_argument("--json", action="store_true", help="Emite el snapshot en JSON")
@@ -239,6 +296,9 @@ def main() -> None:
         return
     if args.command == "estado":
         _status(parser, args)
+        return
+    if args.command == "procesar":
+        _process(parser, args)
         return
     if args.command == "diagnostico":
         print("La sincronización del catálogo está disponible; las consultas aún no.")

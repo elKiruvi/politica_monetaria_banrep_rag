@@ -2,7 +2,7 @@
 
 Software libre para explorar, de forma local, los informes del [Banco de la República](https://www.banrep.gov.co/es/publicaciones-investigaciones/informe-politica-monetaria/historico-informes). No existe afiliación con el Banco. El software no proporciona asesoría financiera.
 
-**Estado: en desarrollo.** Puede intentar sincronizar un catálogo local, pero aún no extrae texto ni responde preguntas. No hay un corpus precargado y los PDF del proyecto de referencia no se redistribuyen.
+**Estado: en desarrollo.** Descubre los informes, sincroniza o importa un catálogo local y extrae texto, cuadros y fragmentos citables; aún no indexa ni responde preguntas. No hay un corpus precargado y los PDF del proyecto de referencia no se redistribuyen.
 
 ## Instalación de desarrollo
 
@@ -38,6 +38,10 @@ uv run --frozen banrep-rag importar ~/Descargas/informe-politica-monetaria-*.pdf
 ```
 
 El periodo se identifica con dos evidencias (portada con la serie junto al periodo, y título interno o ISSN de la serie), se rechazan presentaciones, anexos y otros documentos, y los metadatos se verifican en Crossref (`--sin-red` lo omite). Para sustituir un PDF ya importado del mismo periodo se usa `--reemplazar`. Un catálogo importado se marca como tal: **no** equivale a «los últimos 12 informes». Con `sincronizar --usar-importados`, un PDF importado solo sustituye a una descarga que falló. Detalles en la [ADR 0005](docs/decisiones/0005-importacion-local.md).
+
+## Procesamiento de los informes
+
+`uv run --frozen banrep-rag procesar` analiza los PDF del catálogo activo: separa columnas, títulos y secciones, reconstruye los cuadros con cada cifra junto a su fila, columna y unidad (y marca las proyecciones cuando el cuadro lo indica), conserva título y fuente de cada gráfico sin inventar sus datos, y genera fragmentos citables con página del PDF y página impresa. El resultado queda en `processed/` y se reutiliza mientras no cambien el PDF ni la versión del procesamiento (`--forzar` lo repite; `--procesos N` usa varios procesos). Cada informe muestra un resumen de calidad y se marca **degradado** si falta texto o fallan muchos cuadros. Detalles y mediciones en la [ADR 0006](docs/decisiones/0006-procesamiento-pdf.md). Aún no hay índice de búsqueda ni respuestas (fases F5 y F6).
 
 El diagnóstico de investigación, incluido el bloqueo de las consultas paginadas a la fuente, está en [docs/arquitectura/diagnostico_inicial.md](docs/arquitectura/diagnostico_inicial.md). Las entregas pendientes se describen en los issues. No se exige ningún proveedor comercial para instalar la base.
 
