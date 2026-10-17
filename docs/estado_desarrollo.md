@@ -54,9 +54,10 @@ ADR 0001 (aislamiento del repo original) · 0002 (pypdf para validar) · 0003 (s
 ## Reanudación: integridad anterior al índice
 
 - Baseline local: `uv sync --frozen`; 328 pruebas aprobadas, 1 omitida (red real); Ruff y Mypy aprobados. El catálogo local sigue siendo una **importación de cinco PDF**, no N=12. Ollama enumera `embeddinggemma:latest`, `bge-m3:latest` y `qwen3:4b-instruct`: su presencia no demuestra ejecución de modelos.
-- H1 (#27): aislar también `inspect_pdf` de las descargas, con timeout y límite de memoria donde el sistema operativo lo permita. Las pruebas de PDF y fallo de hijo son offline; no sustituyen una descarga real ni prueban Windows. No cerrar #4 ni #18 con esta corrección.
-- H2: comprobar hash del PDF e integridad de caché antes de indexar; H3: persistir el resultado fallido de revalidaciones sin fingir frescura; H4/H5: reglas de evidencia por unidad, `table_raw` y límites del fragmentador. No publicar índice hasta cumplir las políticas críticas.
-- F5 (#6) sigue sin índice; F6–F10 permanecen pendientes. La próxima unidad debe revisar `processed_store.py` y cubrir corrupción/alteración de fuentes antes de indexar.
+- H1 (#27) fusionada mediante PR #32 a `main` `34c3786b6bf2eab2dd08744926dbb8b74a1268b9`; CI post-merge aprobado (run 38999188560). Revisión independiente: dos fallos medios de arranque/cola corregidos, sin altos/medios restantes. 339 pruebas offline aprobadas, 1 omitida. Windows/macOS y descarga real siguen sin verificar.
+- H2 (#28), rama `fix/cache-procesamiento-segura`: firma de caché nueva, verificación del PDF incluso en aciertos, integridad y estructura del artefacto, bloqueo de escritores y reconstrucción controlada. **Pendiente de revisión y CI remoto.** En copia temporal de los cinco PDF reales se produjeron 1.851 fragmentos con los conteos F4; segunda pasada: cinco aciertos. No son los 12 informes más recientes ni se probó una descarga.
+- H3 (#29): persistir resultado fallido de revalidaciones sin fingir frescura. H4 (#30) y H5 (#31): evidencia por unidad, `table_raw`, notas y límites del fragmentador. No publicar índice hasta cumplir las políticas críticas.
+- F5 (#6) sigue sin índice; F6–F10 permanecen pendientes. La próxima unidad prioritaria es H3 y las políticas seguras H4/H5, después recuperación léxica e índice transaccional.
 
 ## Cómo retomar
 
