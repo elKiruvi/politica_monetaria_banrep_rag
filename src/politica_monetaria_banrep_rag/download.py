@@ -19,6 +19,7 @@ import httpx
 from pypdf import PdfReader
 from pypdf.errors import PyPdfError
 
+from politica_monetaria_banrep_rag.isolation import IsolationError, run_isolated
 from politica_monetaria_banrep_rag.source import ReportRecord, SourceError, _official_url
 from politica_monetaria_banrep_rag.urls import UnsafeUrlError, is_challenge_url, redirect_target
 
@@ -270,7 +271,22 @@ class PdfDownloader:
             if total < 8:
                 raise DownloadError("La descarga PDF está vacía o incompleta.")
             self._check_deadline(deadline)
-            pages = inspect_pdf(tmp, self.max_pages)
+            try:
+                pages = run_isolated(
+                    inspect_pdf,
+                    tmp,
+                    self.max_pages,
+                    timeout=min(60, deadline - time.monotonic()),
+                    memory_mb=1024,
+                )
+            except IsolationError as exc:
+                if getattr(exc, "error_type", None) == "DownloadError":
+                    raise DownloadError(str(exc)) from exc
+                if getattr(exc, "error_type", None) == "Timeout":
+                    raise DownloadError("La validación del PDF superó el tiempo máximo.") from exc
+                raise DownloadError(
+                    "La validación aislada del PDF falló o agotó la memoria."
+                ) from exc
             self._check_deadline(deadline)
             target = raw_dir / f"{report_id}-{digest.hexdigest()}.pdf"
             identical = self._existing_file_is_identical(target, digest.hexdigest(), total)

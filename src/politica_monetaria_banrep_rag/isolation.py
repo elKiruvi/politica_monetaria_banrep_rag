@@ -43,12 +43,18 @@ def run_isolated(
     Las excepciones del hijo se devuelven como ``IsolationError`` con el tipo original en
     ``error_type`` para que quien llama pueda traducirlas.
     """
-    context = multiprocessing.get_context("spawn")
-    channel = context.Queue()
-    process = context.Process(
-        target=_child, args=(channel, function, args, memory_mb * 1024 * 1024), daemon=True
-    )
-    process.start()
+    channel: Any = None
+    try:
+        context = multiprocessing.get_context("spawn")
+        channel = context.Queue()
+        process = context.Process(
+            target=_child, args=(channel, function, args, memory_mb * 1024 * 1024), daemon=True
+        )
+        process.start()
+    except (OSError, RuntimeError, TypeError, ValueError, MemoryError) as exc:
+        if channel is not None:
+            channel.close()
+        raise IsolationError("No se pudo iniciar el proceso aislado para analizar el PDF.") from exc
     deadline = time.monotonic() + timeout
     try:
         while True:
@@ -79,6 +85,7 @@ def run_isolated(
         process.join(5)
         if process.is_alive():
             process.kill()
+            process.join(5)
         channel.close()
     if status == "ok":
         return payload[0]
