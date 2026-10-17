@@ -58,6 +58,28 @@ class ProcessedDocument:
         return asdict(self)
 
 
+def quality_warnings(
+    pages: int,
+    pages_with_text: int,
+    characters: int,
+    ligatures_unresolved: int,
+    tables_reconstructed: int,
+    tables_failed: int,
+) -> tuple[str, ...]:
+    """Deduce las advertencias de los contadores, también al releer un artefacto."""
+    warnings = []
+    if pages_with_text < 0.8 * pages:
+        warnings.append("Menos del 80 % de las páginas tienen texto extraíble (¿PDF escaneado?).")
+    if characters < 20_000:
+        warnings.append("El documento tiene muy poco texto para un Informe de Política Monetaria.")
+    if ligatures_unresolved > 50:
+        warnings.append("Hay muchas ligaduras «fi»/«fl» que no se pudieron reparar.")
+    total_tables = tables_reconstructed + tables_failed
+    if total_tables and tables_failed > total_tables / 2:
+        warnings.append("Más de la mitad de los cuadros no se pudieron reconstruir.")
+    return tuple(warnings)
+
+
 def _region_units(
     blocks: list[Block], page: PageLayout, section: tuple[str, ...], previous_table: str | None
 ) -> tuple[list[Unit], int, list[tuple[int, str, str]], str | None]:
@@ -209,16 +231,14 @@ def process_pdf(path: Path, report_id: str, sha256: str) -> ProcessedDocument:
                 else:
                     units.append(Unit(kind, block.text, page.number, page.label, section))
     characters = sum(len(unit.text) for unit in units)
-    warnings = []
-    if pages_with_text < 0.8 * len(layout.pages):
-        warnings.append("Menos del 80 % de las páginas tienen texto extraíble (¿PDF escaneado?).")
-    if characters < 20_000:
-        warnings.append("El documento tiene muy poco texto para un Informe de Política Monetaria.")
-    if layout.ligatures.unresolved > 50:
-        warnings.append("Hay muchas ligaduras «fi»/«fl» que no se pudieron reparar.")
-    total_tables = reconstructed + len(failed)
-    if total_tables and len(failed) > total_tables / 2:
-        warnings.append("Más de la mitad de los cuadros no se pudieron reconstruir.")
+    warnings = quality_warnings(
+        len(layout.pages),
+        pages_with_text,
+        characters,
+        layout.ligatures.unresolved,
+        reconstructed,
+        len(failed),
+    )
     quality = QualityReport(
         pages=len(layout.pages),
         pages_with_text=pages_with_text,
@@ -230,6 +250,6 @@ def process_pdf(path: Path, report_id: str, sha256: str) -> ProcessedDocument:
         ligatures_repaired=layout.ligatures.repaired,
         ligatures_unresolved=layout.ligatures.unresolved,
         degraded=bool(warnings),
-        warnings=tuple(warnings),
+        warnings=warnings,
     )
     return ProcessedDocument(report_id, sha256, PROCESSING_VERSION, tuple(units), quality)

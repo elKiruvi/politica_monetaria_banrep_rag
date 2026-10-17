@@ -23,15 +23,110 @@ from politica_monetaria_banrep_rag.catalog import (
 )
 from politica_monetaria_banrep_rag.chunking import CHUNKER_VERSION, chunk_document
 from politica_monetaria_banrep_rag.isolation import IsolationError, run_isolated
-from politica_monetaria_banrep_rag.processing import PROCESSING_VERSION, process_pdf
+from politica_monetaria_banrep_rag.processing import (
+    PROCESSING_VERSION,
+    ProcessedDocument,
+    QualityReport,
+    Unit,
+    process_pdf,
+    quality_warnings,
+)
+from politica_monetaria_banrep_rag.tables import Cell, Row, Table
 
 _SHA = re.compile(r"[0-9a-f]{64}")
-_CHUNK_ID = re.compile(r"[0-9a-f]{32}")
 _UNIT_KINDS = {"paragraph", "table", "table_raw", "chart_caption", "footnote"}
 
 
+def _strings(value: object) -> tuple[str, ...]:
+    if not isinstance(value, list) or not all(isinstance(item, str) for item in value):
+        raise ValueError("lista de texto inválida")
+    return tuple(value)
+
+
+def _table(value: object) -> Table:
+    if not isinstance(value, dict) or not isinstance(value.get("rows"), list):
+        raise ValueError("cuadro inválido")
+    rows = []
+    for entry in value["rows"]:
+        if not isinstance(entry, dict) or not isinstance(entry.get("values"), list):
+            raise ValueError("fila inválida")
+        cells: list[Cell | None] = []
+        for cell in entry["values"]:
+            if cell is None:
+                cells.append(None)
+            elif (
+                isinstance(cell, dict)
+                and isinstance(cell.get("text"), str)
+                and type(cell.get("bold")) is bool
+            ):
+                cells.append(Cell(cell["text"], cell["bold"]))
+            else:
+                raise ValueError("celda inválida")
+        rows.append(Row(_strings(entry.get("labels")), tuple(cells), _strings(entry.get("group"))))
+    if (
+        not isinstance(value.get("caption"), str)
+        or type(value.get("page")) is not int
+        or not isinstance(value.get("context"), str)
+        or type(value.get("bold_is_projection")) is not bool
+    ):
+        raise ValueError("cabecera de cuadro inválida")
+    table = Table(
+        value["caption"],
+        value["page"],
+        value["context"],
+        _strings(value.get("label_headers")),
+        _strings(value.get("columns")),
+        tuple(rows),
+        _strings(value.get("notes")),
+        value["bold_is_projection"],
+    )
+    if any(len(row.values) != len(table.columns) for row in rows):
+        raise ValueError("columnas de cuadro inválidas")
+    return table
+
+
+def _replay_chunks(
+    document: dict[str, object], report_id: str, sha256: str, max_chars: int
+) -> list[dict[str, object]]:
+    """Reconstruye las citas desde las unidades, no desde el texto del fragmento guardado."""
+    serialized = document["units"]
+    assert isinstance(serialized, list)
+    units = []
+    for entry in serialized:
+        assert isinstance(entry, dict)
+        table = _table(entry["table"]) if entry.get("kind") == "table" else None
+        if entry.get("table") is not None and entry.get("kind") != "table":
+            raise ValueError("cuadro fuera de una unidad de cuadro")
+        if (
+            entry.get("page_label") is not None
+            and not isinstance(entry["page_label"], str)
+            or entry.get("page_end_label") is not None
+            and not isinstance(entry["page_end_label"], str)
+        ):
+            raise ValueError("etiqueta de página inválida")
+        unit = Unit(
+            entry["kind"],
+            entry["text"],
+            entry["page"],
+            entry.get("page_label"),
+            _strings(entry["section"]),
+            table,
+            entry.get("page_end"),
+            entry.get("page_end_label"),
+        )
+        if table is not None and (table.page != unit.page or table.to_text() != unit.text):
+            raise ValueError("texto del cuadro no coincide con sus celdas")
+        units.append(unit)
+    quality = document["quality"]
+    assert isinstance(quality, dict)
+    replayed = ProcessedDocument(
+        report_id, sha256, PROCESSING_VERSION, tuple(units), QualityReport(**quality)
+    )
+    return [chunk.to_dict() for chunk in chunk_document(replayed, max_chars=max_chars)]
+
+
 def _payload_digest(data: dict[str, object]) -> str:
-    """Firma el contenido; los metadatos del catálogo se actualizan por separado."""
+    """Detecta corrupción; no autentica un archivo local manipulado con su hash recalculado."""
     content = {key: data[key] for key in ("document", "chunks", "versions")}
     return hashlib.sha256(_json_bytes(content)).hexdigest()
 
@@ -60,8 +155,6 @@ def _valid_payload(
     if (
         type(pages) is not int
         or not 1 <= pages <= 400
-        or not units
-        or not chunks
         or any(
             type(quality.get(key)) is not int or quality[key] < 0
             for key in ("tables_reconstructed", "ligatures_repaired")
@@ -73,8 +166,14 @@ def _valid_payload(
         or type(quality.get("pages_with_text")) is not int
         or not 0 <= quality["pages_with_text"] <= pages
         or type(quality.get("characters")) is not int
+        or type(quality.get("ligatures_unresolved")) is not int
+        or quality["ligatures_unresolved"] < 0
         or not isinstance(quality.get("units"), dict)
         or not isinstance(quality.get("excluded_blocks"), dict)
+        or any(
+            not isinstance(key, str) or type(value) is not int or value < 0
+            for key, value in quality["excluded_blocks"].items()
+        )
     ):
         return False
     for unit in units:
@@ -98,6 +197,9 @@ def _valid_payload(
         quality["characters"] != sum(len(unit["text"]) for unit in units)
         or quality["units"] != dict(Counter(unit["kind"] for unit in units))
         or quality["tables_reconstructed"] != sum(unit["kind"] == "table" for unit in units)
+        or len(quality["tables_failed"]) != sum(unit["kind"] == "table_raw" for unit in units)
+        or quality["pages_with_text"]
+        < len({page for unit in units for page in (unit["page"], unit["page_end"] or unit["page"])})
         or any(
             not isinstance(item, list)
             or len(item) != 3
@@ -108,46 +210,30 @@ def _valid_payload(
         )
     ):
         return False
-    unit_keys = {(unit["kind"], tuple(unit["section"]), unit["page"]) for unit in units}
-    seen: set[str] = set()
-    for position, chunk in enumerate(chunks):
-        if not isinstance(chunk, dict):
-            return False
-        text, start, end, chunk_id = (
-            chunk.get("text"),
-            chunk.get("page_start"),
-            chunk.get("page_end"),
-            chunk.get("chunk_id"),
-        )
-        if (
-            not isinstance(text, str)
-            or not text
-            or type(start) is not int
-            or type(end) is not int
-            or not 1 <= start <= end <= pages
-            or not isinstance(chunk_id, str)
-            or not _CHUNK_ID.fullmatch(chunk_id)
-            or chunk_id in seen
-            or chunk.get("report_id") != report_id
-            or not isinstance(chunk.get("kind"), str)
-            or chunk["kind"] not in _UNIT_KINDS | {"table_notes"}
-            or not isinstance(chunk.get("section"), list)
-            or not all(isinstance(s, str) for s in chunk["section"])
-            or not isinstance(chunk.get("page_labels"), list)
-            or not all(isinstance(s, str) for s in chunk["page_labels"])
-        ):
-            return False
-        identity = "|".join(
-            (report_id, sha256, PROCESSING_VERSION, CHUNKER_VERSION, str(position), text)
-        )
-        if hashlib.sha256(identity.encode("utf-8")).hexdigest()[:32] != chunk_id:
-            return False
-        unit_kind = "table" if chunk["kind"] == "table_notes" else chunk["kind"]
-        section = tuple(chunk["section"])
-        if not any((unit_kind, section, page) in unit_keys for page in range(start, end + 1)):
-            return False
-        seen.add(chunk_id)
-    return True
+    raw_units = (unit for unit in units if unit["kind"] == "table_raw")
+    if any(
+        entry[0] != unit["page"] or not unit["text"].startswith(entry[1])
+        for entry, unit in zip(quality["tables_failed"], raw_units, strict=True)
+    ):
+        return False
+    expected_warnings = quality_warnings(
+        pages,
+        quality["pages_with_text"],
+        quality["characters"],
+        quality["ligatures_unresolved"],
+        quality["tables_reconstructed"],
+        len(quality["tables_failed"]),
+    )
+    if quality["warnings"] != list(expected_warnings) or quality["degraded"] != bool(
+        expected_warnings
+    ):
+        return False
+    max_chars = versions.get("max_chars")
+    if type(max_chars) is not int:
+        return False
+    return _json_bytes(chunks) == _json_bytes(
+        _replay_chunks(document, report_id, sha256, max_chars)
+    )
 
 
 @dataclass(frozen=True)
@@ -185,7 +271,7 @@ class ProcessedStore:
         self.root = root
         self.max_chars = max_chars
         signature = (
-            f"cache=2|{PROCESSING_VERSION}|{CHUNKER_VERSION}|{max_chars}|"
+            f"cache=3|{PROCESSING_VERSION}|{CHUNKER_VERSION}|{max_chars}|"
             f"pdfminer={metadata.version('pdfminer.six')}"
         )
         self.version = hashlib.sha256(signature.encode()).hexdigest()[:12]
@@ -199,13 +285,15 @@ class ProcessedStore:
         """Lee un resultado en caché; un archivo dañado se trata como ausente."""
         try:
             data = json.loads(target.read_bytes())
-        except (OSError, ValueError, UnicodeError):
-            return None
-        if not isinstance(data, dict) or not {"document", "chunks", "report", "pdf"} <= set(data):
-            return None
-        if not _valid_payload(data, report_id, sha256, self._versions()):
-            return None
-        if data.get("payload_sha256") != _payload_digest(data):
+            if not isinstance(data, dict) or not {"document", "chunks", "report", "pdf"} <= set(
+                data
+            ):
+                return None
+            if not _valid_payload(data, report_id, sha256, self._versions()):
+                return None
+            if data.get("payload_sha256") != _payload_digest(data):
+                return None
+        except (OSError, ValueError, UnicodeError, TypeError, KeyError, RecursionError):
             return None
         return data
 
@@ -251,14 +339,24 @@ class ProcessedStore:
             assert isinstance(report, dict) and isinstance(pdf, dict)
             report_id, sha256 = str(report["report_id"]), str(pdf["sha256"])
             target = self.path_for(report_id, sha256)
-            source = self.root / str(pdf["path"])
-            if not source.is_file() or source.is_symlink():
+            expected = f"raw/{report_id}-{sha256}.pdf"
+            source = self.root / expected
+            if (
+                pdf.get("path") != expected
+                or (self.root / "raw").is_symlink()
+                or not source.is_file()
+                or source.is_symlink()
+            ):
                 failures.append((report_id, "falta el PDF seguro en el almacén local"))
                 continue
-            with source.open("rb") as handle:
-                if hashlib.file_digest(handle, "sha256").hexdigest() != sha256:
-                    failures.append((report_id, "el PDF local no coincide con su hash"))
-                    continue
+            try:
+                with source.open("rb") as handle:
+                    if hashlib.file_digest(handle, "sha256").hexdigest() != sha256:
+                        failures.append((report_id, "el PDF local no coincide con su hash"))
+                        continue
+            except OSError as exc:
+                failures.append((report_id, f"no se pudo leer el PDF local: {exc}"))
+                continue
             cached = None if force else self._load(target, report_id, sha256)
             if cached is not None:
                 if cached["report"] != report or cached["pdf"] != pdf:
@@ -281,17 +379,27 @@ class ProcessedStore:
                 failures.append((job_id(record), str(exc)))
                 notify(f"No se pudo procesar {job_id(record)}: {exc}")
                 return
-            payload = json.loads(data)
-            payload["report"] = record["report"]
-            payload["pdf"] = record["pdf"]
-            payload["versions"] = self._versions()
-            if not _valid_payload(payload, job[1], job[2], self._versions()):
+            try:
+                payload = json.loads(data)
+                if not isinstance(payload, dict):
+                    raise ValueError("resultado no es un objeto")
+                payload["report"] = record["report"]
+                payload["pdf"] = record["pdf"]
+                payload["versions"] = self._versions()
+                valid = _valid_payload(payload, job[1], job[2], self._versions())
+            except (ValueError, UnicodeError, TypeError, KeyError, RecursionError):
+                valid = False
+            if not valid:
                 failures.append((job[1], "el procesamiento produjo un artefacto inválido"))
                 return
-            with Path(job[0]).open("rb") as handle:
-                if hashlib.file_digest(handle, "sha256").hexdigest() != job[2]:
-                    failures.append((job[1], "el PDF cambió durante el procesamiento"))
-                    return
+            try:
+                with Path(job[0]).open("rb") as handle:
+                    if hashlib.file_digest(handle, "sha256").hexdigest() != job[2]:
+                        failures.append((job[1], "el PDF cambió durante el procesamiento"))
+                        return
+            except OSError as exc:
+                failures.append((job[1], f"no se pudo releer el PDF local: {exc}"))
+                return
             payload["payload_sha256"] = _payload_digest(payload)
             _atomic_write(target, _json_bytes(payload))
             notify(f"Procesado {job_id(record)}.")
