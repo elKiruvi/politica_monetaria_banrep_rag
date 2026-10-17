@@ -2,20 +2,24 @@ import gzip
 import hashlib
 import io
 import os
+import time
 from dataclasses import replace
 from datetime import UTC, datetime, timedelta
 from email.utils import format_datetime
+from types import SimpleNamespace
 
 import httpx
 import pytest
 from pypdf import PdfWriter
 
+from politica_monetaria_banrep_rag import isolation
 from politica_monetaria_banrep_rag.download import (
     DownloadBlockedError,
     DownloadError,
     PdfDownloader,
     _retry_after,
 )
+from politica_monetaria_banrep_rag.isolation import IsolationError, run_isolated
 from politica_monetaria_banrep_rag.source import ReportRecord
 
 
@@ -190,6 +194,129 @@ def test_page_limit_rejects_valid_pdf_without_saving(tmp_path, report):
         with pytest.raises(DownloadError, match="páginas"):
             PdfDownloader(client, max_pages=1).download(report, tmp_path)
     assert list(tmp_path.iterdir()) == []
+
+
+def _hang_in_child():
+    time.sleep(30)
+
+
+def _crash_in_child():
+    os._exit(3)
+
+
+@pytest.mark.parametrize("worker", [_hang_in_child, _crash_in_child])
+def test_isolated_worker_stops_after_timeout_or_crash(worker):
+    started = time.monotonic()
+    with pytest.raises(IsolationError):
+        run_isolated(worker, timeout=0.3, memory_mb=1024)
+    assert time.monotonic() - started < 10
+
+
+@pytest.mark.parametrize("worker", [_hang_in_child, _crash_in_child])
+def test_download_worker_failure_keeps_verified_pdf(
+    tmp_path, report, pdf_bytes, monkeypatch, worker
+):
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        )
+    ) as client:
+        downloader = PdfDownloader(client)
+        previous = downloader.download(report, tmp_path)
+
+        def fail_in_child(function, path, max_pages, *, timeout, memory_mb):
+            return run_isolated(worker, timeout=0.3, memory_mb=memory_mb)
+
+        monkeypatch.setattr("politica_monetaria_banrep_rag.download.run_isolated", fail_in_child)
+        with pytest.raises(DownloadError, match="validación"):
+            downloader.download(report, tmp_path)
+    assert previous.path.read_bytes() == pdf_bytes
+    assert list(tmp_path.glob(".descarga-*")) == []
+
+
+@pytest.mark.parametrize("failure", [OSError("sin recursos"), RuntimeError("sin proceso")])
+def test_worker_start_failure_closes_channel_and_download_temp(
+    tmp_path, report, pdf_bytes, monkeypatch, failure
+):
+    closed = []
+
+    class BrokenProcess:
+        def start(self):
+            raise failure
+
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        )
+    ) as client:
+        downloader = PdfDownloader(client)
+        previous = downloader.download(report, tmp_path)
+        channel = SimpleNamespace(close=lambda: closed.append(True))
+        context = SimpleNamespace(Queue=lambda: channel, Process=lambda **_: BrokenProcess())
+        monkeypatch.setattr(isolation.multiprocessing, "get_context", lambda _: context)
+        with pytest.raises(DownloadError, match="validación aislada"):
+            downloader.download(report, tmp_path)
+    assert closed == [True]
+    assert previous.path.read_bytes() == pdf_bytes
+    assert list(tmp_path.glob(".descarga-*")) == []
+
+
+def test_ipc_queue_failure_is_a_download_error(tmp_path, report, pdf_bytes, monkeypatch):
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        )
+    ) as client:
+        downloader = PdfDownloader(client)
+        previous = downloader.download(report, tmp_path)
+
+        def fail_queue():
+            raise OSError("cola IPC no disponible")
+
+        monkeypatch.setattr(
+            isolation.multiprocessing,
+            "get_context",
+            lambda _: SimpleNamespace(Queue=fail_queue),
+        )
+        with pytest.raises(DownloadError, match="validación aislada"):
+            downloader.download(report, tmp_path)
+    assert previous.path.read_bytes() == pdf_bytes
+    assert list(tmp_path.glob(".descarga-*")) == []
+
+
+@pytest.mark.parametrize(
+    "error_type,message",
+    [
+        ("DownloadError", "La firma PDF no es válida."),
+        ("Timeout", "La validación del PDF superó el tiempo máximo."),
+        ("Crash", "La validación aislada del PDF falló"),
+        ("RuntimeError", "La validación aislada del PDF falló"),
+    ],
+)
+def test_worker_failure_cleans_temp_and_preserves_previous_pdf(
+    tmp_path, report, pdf_bytes, monkeypatch, error_type, message
+):
+    with httpx.Client(
+        transport=httpx.MockTransport(
+            lambda _: httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        )
+    ) as client:
+        downloader = PdfDownloader(client)
+        previous = downloader.download(report, tmp_path)
+
+        def fail(function, path, max_pages, *, timeout, memory_mb):
+            assert function.__name__ == "inspect_pdf"
+            assert path.name.startswith(".descarga-")
+            assert max_pages == 400 and 0 < timeout <= 60 and memory_mb == 1024
+            error = IsolationError(message)
+            error.error_type = error_type
+            raise error
+
+        monkeypatch.setattr("politica_monetaria_banrep_rag.download.run_isolated", fail)
+        with pytest.raises(DownloadError, match=message):
+            downloader.download(report, tmp_path)
+    assert previous.path.read_bytes() == pdf_bytes
+    assert list(tmp_path.glob(".descarga-*")) == []
 
 
 @pytest.mark.parametrize(
