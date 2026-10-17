@@ -237,7 +237,7 @@ def test_store_keeps_good_reports_when_one_fails_and_refreshes_metadata(tmp_path
     store = ProcessedStore(data)
     summaries, failures = store.ensure(records + [broken])
     assert [s.report_id for s in summaries] == ["ipm-2025-01"]
-    assert failures == [("ipm-2025-04", "el PDF local no coincide con su hash")]
+    assert failures == [("ipm-2025-04", "falta el PDF seguro en el almacén local")]
     renamed = json.loads(json.dumps(records))
     renamed[0]["report"]["title"] = "Título corregido"
     summaries, failures = store.ensure(renamed)
