@@ -37,3 +37,11 @@
 - El análisis de diseño no conoce el significado económico: «proyección» o «pronóstico» en el texto no se separa de lo observado. Eso corresponde a la generación y a la comparación (F6).
 
 **Alternativas descartadas:** PyMuPDF (licencia), pdfplumber (no recupera estas filas), extracción simple de texto (mezcla columnas y desordena cuadros), OCR (fuera de alcance y costoso).
+
+## Actualización H2 — integridad de artefactos procesados
+
+Antes de preparar un índice, `ProcessedStore.ensure` verifica el SHA-256 completo de **cada PDF**, incluso con un acierto de caché. No se repetirá este hash en cada consulta. La firma de ruta incorpora `cache=2`: los cinco JSON anteriores permanecen en disco y se reconstruyen bajo nombres nuevos, sin migrar silenciosamente datos de una versión no comprobada.
+
+La versión nueva guarda SHA-256 del contenido serializado (`document`, `chunks`, `versions`); valida identidad del informe y PDF, versiones y configuración, cantidad/tipos de unidades, páginas 1-indexadas, contadores de calidad, relación chunk–unidad y `chunk_id` calculado. Los metadatos `report`/`pdf` se toman del catálogo vigente y se pueden actualizar sin cambiar ese hash. Un JSON ilegible o incompatible se reconstruye con aviso; una salida inválida o un PDF cambiado durante el trabajo **no sustituye** el artefacto anterior. El bloqueo `.processing.lock` serializa escritores de caché por instalación; el catálogo conserva su propio bloqueo.
+
+**Evidencia:** copia temporal de los cinco PDF importados, sin llamadas de red: 1.851 fragmentos y calidad idéntica al baseline F4; primera pasada reconstruida, segunda pasada cinco aciertos de caché. Esto comprueba procesamiento de documentos reales, **no** fidelidad económica completa ni N=12. La asociación de `table_raw` con cifras/horizontes y el exceso de longitud de una fila siguen en H4/H5 antes de indexar.
