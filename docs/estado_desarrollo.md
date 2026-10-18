@@ -1,6 +1,6 @@
-# Estado del desarrollo — checkpoint F4 y H2
+# Estado del desarrollo — checkpoint F4–H3
 
-**Fecha:** 16 de octubre de 2026. **`main` verificada al retomar:** `2175077556b56c8ea6a689c1565485268288b69d`; CI aprobado, árbol limpio, sin PR abiertos. **Próxima fase:** endurecimiento H1–H5 antes de activar F5.
+**Fecha inicial:** 16 de octubre de 2026; actualización H3: 18 de octubre de 2026. **`main` verificada al retomar:** `2175077556b56c8ea6a689c1565485268288b69d`; CI aprobado, árbol limpio, sin PR abiertos. **Próxima fase:** completar H4–H5 antes de activar F5.
 
 ## Resumen por fase
 
@@ -56,8 +56,8 @@ ADR 0001 (aislamiento del repo original) · 0002 (pypdf para validar) · 0003 (s
 - Baseline local: `uv sync --frozen`; 328 pruebas aprobadas, 1 omitida (red real); Ruff y Mypy aprobados. El catálogo local sigue siendo una **importación de cinco PDF**, no N=12. Ollama enumera `embeddinggemma:latest`, `bge-m3:latest` y `qwen3:4b-instruct`: su presencia no demuestra ejecución de modelos.
 - H1 (#27) fusionada mediante PR #32 a `main` `34c3786b6bf2eab2dd08744926dbb8b74a1268b9`; CI post-merge aprobado (run 38999188560). Revisión independiente: dos fallos medios de arranque/cola corregidos, sin altos/medios restantes. 339 pruebas offline aprobadas, 1 omitida. Windows/macOS y descarga real siguen sin verificar.
 - H2 (#28, PR #33): firma de caché nueva, verificación del PDF incluso en aciertos, ruta segura, fragmentos reconstruidos desde unidades, calidad coherente, bloqueo de escritores y reconstrucción controlada. La revisión independiente final no encontró fallos altos ni medios; el PR conserva los checks y su estado de fusión. En copia temporal de los cinco PDF reales se produjeron 1.851 fragmentos con los conteos F4; segunda pasada: cinco aciertos tras las últimas correcciones. No son los 12 informes más recientes ni se probó una descarga. Un SHA guardado en el JSON no autentica las unidades contra el PDF.
-- H3 (#29): persistir resultado fallido de revalidaciones sin fingir frescura. H4 (#30) y H5 (#31): evidencia por unidad, `table_raw`, notas y límites del fragmentador. No publicar índice hasta cumplir las políticas críticas.
-- F5 (#6) sigue sin índice; F6–F10 permanecen pendientes. La próxima unidad prioritaria es H3 y las políticas seguras H4/H5, después recuperación léxica e índice transaccional.
+- H3 (#29): intentos de revalidación separados de snapshots, plazo persistido, comprobación del PDF local y frescura efectiva en `estado` (texto y JSON), incluso tras una sincronización incompleta; compatibilidad con snapshots v1/v2. La revisión independiente final no encontró fallos altos ni medios; 396 pruebas offline aprobadas y 1 omitida. ADR 0003. Esto no demuestra N=12 ni que la fuente esté accesible hoy.
+- H4 (#30) y H5 (#31): evidencia por unidad, `table_raw`, notas y límites del fragmentador. F5 (#6) sigue sin índice; F6–F10 permanecen pendientes. No publicar índice hasta cumplir las políticas críticas.
 
 ## Cómo retomar
 
@@ -66,4 +66,4 @@ git switch main && git pull --ff-only
 uv sync --frozen && uv run --frozen pytest -q
 uv run --frozen banrep-rag estado --data-dir data/catalogo
 ```
-Leer `CLAUDE.md` y las ADR; continuar con #29 (H3), luego #30/#31 (H4/H5). No activar #6 (F5) antes de cerrar esos controles.
+Leer `CLAUDE.md` y las ADR; continuar con #30 (H4), luego #31 (H5). No activar #6 (F5) antes de cerrar esos controles.

@@ -3,6 +3,7 @@ import json
 import os
 import subprocess
 import sys
+import time
 from dataclasses import replace
 
 import httpx
@@ -11,6 +12,7 @@ from pypdf import PdfWriter
 
 from politica_monetaria_banrep_rag.catalog import Catalog, CatalogError
 from politica_monetaria_banrep_rag.download import DownloadError, PdfDownloader
+from politica_monetaria_banrep_rag.isolation import IsolationError
 from politica_monetaria_banrep_rag.source import ReportRecord
 
 
@@ -329,8 +331,354 @@ def test_blocked_revalidation_keeps_last_verified_pdf(tmp_path, pdf_bytes):
         first = catalog.sync(1)
         clock.now += 31 * 86400
         status[0] = 302
-        assert catalog.sync(1) == first
+        pending = catalog.sync(1)
+        assert pending != first
+        clock.now += 3600
+        assert catalog.sync(1) == pending  # El intento cambia; el snapshot no.
     assert any("no se pudo revalidar" in m for m in messages)
+    assert catalog.current()[1]["reports"][0]["acquisition"]["verification_status"] == (
+        "revalidation_pending"
+    )
+    assert len(list((catalog.root / "snapshots").glob("*.json"))) == 2
+    state = catalog.verification(catalog.current()[1]["reports"])[0]
+    assert state["status"] == "revalidation_pending" and state["error_type"] == "blocked"
+    assert state["last_successful_verification_at"] != state["last_attempt_at"]
+
+
+@pytest.mark.parametrize(
+    "failure,expected", [(302, "blocked"), (503, "transient"), ("network", "transient")]
+)
+def test_revalidation_failure_and_recovery_are_observable(tmp_path, pdf_bytes, failure, expected):
+    clock, mode = Clock(), [200]
+
+    def respond(request):
+        if mode[0] == "network":
+            raise httpx.ConnectError("sin conexión", request=request)
+        if mode[0] == 302:
+            return httpx.Response(302, headers={"location": "https://validate.perfdrive.com/"})
+        if mode[0] == 503:
+            return httpx.Response(503)
+        return httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+
+    catalog, client = make_catalog(tmp_path, Source([report(7)]), respond, wall_clock=clock)
+    with client:
+        verified = catalog.sync(1)
+        first_success = catalog.revalidations()["ipm-2026-07"]["last_successful_verification_at"]
+        clock.now += 31 * 86400
+        mode[0] = failure
+        pending = catalog.sync(1)
+        assert pending != verified
+        attempt = catalog.revalidations()["ipm-2026-07"]
+        assert attempt["status"] == "revalidation_pending"
+        assert attempt["error_type"] == expected
+        assert attempt["last_successful_verification_at"] == first_success
+        clock.now += 3600
+        assert catalog.sync(1) == pending
+        assert (
+            catalog.revalidations()["ipm-2026-07"]["last_attempt_at"]
+            != (attempt["last_attempt_at"])
+        )
+        mode[0] = 200
+        clock.now += 3600
+        assert catalog.sync(1) == verified
+    recovered = catalog.verification(catalog.current()[1]["reports"])[0]
+    assert recovered["status"] == "verified" and recovered["error_type"] is None
+    assert recovered["last_successful_verification_at"] != first_success
+    assert len(list((catalog.root / "snapshots").glob("*.json"))) == 2
+
+
+def test_expired_pdf_is_pending_without_a_failed_attempt(tmp_path, pdf_bytes):
+    clock = Clock()
+    catalog, client = make_catalog(
+        tmp_path, Source([report(7)]), counting(pdf_bytes, []), wall_clock=clock
+    )
+    with client:
+        catalog.sync(1)
+    clock.now += 31 * 86400
+    state = catalog.verification(catalog.current()[1]["reports"])[0]
+    assert state["status"] == "revalidation_pending" and state["error_type"] is None
+    assert state["last_attempt_at"] == state["last_successful_verification_at"]
+
+
+def test_custom_revalidation_period_is_used_by_cli_status(tmp_path, pdf_bytes, monkeypatch, capsys):
+    from politica_monetaria_banrep_rag.cli import main
+
+    clock = Clock()
+    clock.now = time.time() - 2 * 86400
+    catalog, client = make_catalog(
+        tmp_path, Source([report(7)]), counting(pdf_bytes, []),
+        wall_clock=clock, revalidate_seconds=86400,
+    )  # fmt: skip
+    with client:
+        catalog.sync(1)
+    journal = json.loads((catalog.root / "revalidations.json").read_text())
+    assert journal["revalidate_seconds"] == 86400
+    monkeypatch.setattr(
+        sys, "argv", ["banrep-rag", "estado", "--data-dir", str(catalog.root), "--json"]
+    )
+    main()
+    assert json.loads(capsys.readouterr().out)["verification"][0]["status"] == (
+        "revalidation_pending"
+    )
+
+
+def test_missing_active_pdf_cannot_be_presented_as_verified(tmp_path, pdf_bytes):
+    catalog, client = make_catalog(tmp_path, Source([report(7)]), counting(pdf_bytes, []))
+    with client:
+        catalog.sync(1)
+    record = catalog.current()[1]["reports"][0]
+    (catalog.root / record["pdf"]["path"]).unlink()
+    state = catalog.verification([record])[0]
+    assert state["status"] == "unavailable" and state["local_pdf_valid"] is False
+    assert state["last_successful_verification_at"] is not None
+
+
+def test_isolated_pdf_validation_timeout_is_a_transient_revalidation(
+    tmp_path, pdf_bytes, monkeypatch
+):
+    clock = Clock()
+    catalog, client = make_catalog(
+        tmp_path, Source([report(7)]), counting(pdf_bytes, []), wall_clock=clock
+    )
+    with client:
+        catalog.sync(1)
+        clock.now += 31 * 86400
+
+        def time_out(*args, **kwargs):
+            error = IsolationError("Tiempo agotado")
+            error.error_type = "Timeout"  # type: ignore[attr-defined]
+            raise error
+
+        monkeypatch.setattr("politica_monetaria_banrep_rag.download.run_isolated", time_out)
+        catalog.sync(1)
+    attempt = catalog.revalidations()["ipm-2026-07"]
+    assert attempt["status"] == "revalidation_pending"
+    assert attempt["error_type"] == "transient"
+    assert catalog.verification(catalog.current()[1]["reports"])[0]["status"] == (
+        "revalidation_pending"
+    )
+
+
+def test_permanent_failure_is_visible_even_when_snapshot_does_not_change(tmp_path, pdf_bytes):
+    clock, fail = Clock(), [False]
+
+    def respond(request):
+        return (
+            httpx.Response(404)
+            if fail[0]
+            else httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        )
+
+    catalog, client = make_catalog(tmp_path, Source([report(7)]), respond, wall_clock=clock)
+    with client:
+        before = catalog.sync(1)
+        clock.now += 31 * 86400
+        fail[0] = True
+        with pytest.raises(DownloadError, match="404"):
+            catalog.sync(1)
+    assert catalog.current()[0] == before
+    assert catalog.current()[1]["reports"][0]["acquisition"]["verification_status"] == "verified"
+    state = catalog.verification(catalog.current()[1]["reports"])[0]
+    assert state["status"] == "unavailable" and state["error_type"] == "permanent"
+    assert state["last_successful_verification_at"] is not None
+
+
+def test_failed_window_marks_old_snapshot_when_new_pdf_was_verified(tmp_path, pdf_bytes):
+    clock, changed = Clock(), [False]
+    writer = PdfWriter()
+    writer.add_blank_page(width=200, height=200)
+    writer.add_metadata({"/Title": "Corrección"})
+    output = io.BytesIO()
+    writer.write(output)
+    corrected_pdf = output.getvalue()
+
+    def respond(request):
+        if changed[0] and str(request.url).endswith("rh4"):
+            return httpx.Response(404)
+        pdf = corrected_pdf if changed[0] else pdf_bytes
+        return httpx.Response(200, stream=httpx.ByteStream(pdf))
+
+    catalog, client = make_catalog(
+        tmp_path, Source([report(7), report(4)]), respond, wall_clock=clock,
+        revalidate_seconds=0,
+    )  # fmt: skip
+    with client:
+        before = catalog.sync(2)
+        clock.now += 3600
+        changed[0] = True
+        with pytest.raises(DownloadError):
+            catalog.sync(2)
+    assert catalog.current()[0] == before
+    states = catalog.verification(catalog.current()[1]["reports"])
+    assert [state["status"] for state in states] == ["snapshot_outdated", "unavailable"]
+    assert states[0]["last_successful_verification_at"] is not None
+
+
+def test_first_blocked_attempt_is_recorded_without_a_snapshot(tmp_path):
+    catalog, client = make_catalog(
+        tmp_path,
+        Source([report(7)]),
+        lambda _: httpx.Response(302, headers={"location": "https://validate.perfdrive.com/"}),
+    )
+    with client, pytest.raises(DownloadError):
+        catalog.sync(1)
+    assert catalog.current() is None
+    attempt = catalog.revalidations()["ipm-2026-07"]
+    assert attempt["status"] == "unavailable" and attempt["error_type"] == "blocked"
+    assert attempt["last_successful_verification_at"] is None
+
+
+def test_failed_revalidation_after_metadata_change_keeps_last_success(tmp_path, pdf_bytes):
+    clock, fail = Clock(), [False]
+
+    def respond(request):
+        return (
+            httpx.Response(404)
+            if fail[0]
+            else httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        )
+
+    source = Source([report(7)])
+    catalog, client = make_catalog(tmp_path, source, respond, wall_clock=clock)
+    with client:
+        before = catalog.sync(1)
+        source.reports = [replace(report(7), source_updates=("correction:2026-10-20",))]
+        clock.now += 3600
+        fail[0] = True
+        with pytest.raises(DownloadError):
+            catalog.sync(1)
+    assert catalog.current()[0] == before
+    attempt = catalog.revalidations()["ipm-2026-07"]
+    assert attempt["status"] == "unavailable"
+    assert attempt["last_successful_verification_at"] is not None
+
+
+@pytest.mark.parametrize(
+    "invalid",
+    ["{", '{"version":2,"reports":{}}', '{"version":1,"reports":{"ipm-2026-07":{"status":[]}}}'],
+)
+def test_damaged_revalidation_journal_blocks_sync_without_replacing_snapshot(
+    tmp_path, pdf_bytes, invalid
+):
+    catalog, client = make_catalog(tmp_path, Source([report(7)]), counting(pdf_bytes, []))
+    with client:
+        before = catalog.sync(1)
+        (catalog.root / "revalidations.json").write_text(invalid)
+        with pytest.raises(CatalogError, match="revalidaciones"):
+            catalog.sync(1)
+    assert catalog.current()[0] == before
+
+
+@pytest.mark.parametrize("version", [1, 2])
+def test_legacy_snapshot_without_journal_does_not_claim_new_attempt(tmp_path, pdf_bytes, version):
+    import hashlib
+
+    from politica_monetaria_banrep_rag.catalog import _json_bytes
+
+    catalog, client = make_catalog(tmp_path, Source([report(7)]), counting(pdf_bytes, []))
+    with client:
+        catalog.sync(1)
+    snapshot = catalog.current()[1]
+    snapshot["version"] = version
+    snapshot["reports"][0]["acquisition"] = {"method": "download"}
+    if version == 1:
+        snapshot["reports"][0].pop("acquisition")
+    data = _json_bytes(snapshot)
+    legacy = hashlib.sha256(data).hexdigest()
+    (catalog.root / "snapshots" / f"{legacy}.json").write_bytes(data)
+    (catalog.root / "current.json").write_bytes(_json_bytes({"version": 1, "snapshot": legacy}))
+    (catalog.root / "revalidations.json").unlink()
+    assert catalog.current()[0] == legacy
+    state = catalog.verification(catalog.current()[1]["reports"])[0]
+    assert state["status"] == "revalidation_pending" and state["last_attempt_at"] is None
+    assert state["last_successful_verification_at"] is not None
+
+
+def test_cli_status_overlays_a_failed_attempt_on_an_unchanged_snapshot(
+    tmp_path, pdf_bytes, monkeypatch, capsys
+):
+    from politica_monetaria_banrep_rag.cli import main
+
+    clock, fail = Clock(), [False]
+
+    def respond(request):
+        return (
+            httpx.Response(404)
+            if fail[0]
+            else httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+        )
+
+    catalog, client = make_catalog(tmp_path, Source([report(7)]), respond, wall_clock=clock)
+    with client:
+        snapshot = catalog.sync(1)
+        clock.now += 31 * 86400
+        fail[0] = True
+        with pytest.raises(DownloadError):
+            catalog.sync(1)
+    monkeypatch.setattr(
+        sys, "argv", ["banrep-rag", "estado", "--data-dir", str(catalog.root), "--json"]
+    )
+    main()
+    output = json.loads(capsys.readouterr().out)
+    assert output["snapshot"] == snapshot
+    assert output["reports"][0]["acquisition"]["verification_status"] == "verified"
+    assert output["verification"][0]["status"] == "unavailable"
+    assert output["verification"][0]["last_successful_verification_at"]
+    assert output["revalidations"]["ipm-2026-07"]["error_type"] == "permanent"
+    monkeypatch.setattr(sys, "argv", ["banrep-rag", "estado", "--data-dir", str(catalog.root)])
+    main()
+    text = capsys.readouterr().out
+    assert "vigencia en la fuente no confirmada" in text and "permanent" in text
+
+
+def test_cli_status_exposes_failed_first_attempt_without_an_active_catalog(
+    tmp_path, monkeypatch, capsys
+):
+    from politica_monetaria_banrep_rag.cli import main
+
+    catalog, client = make_catalog(
+        tmp_path,
+        Source([report(7)]),
+        lambda _: httpx.Response(302, headers={"location": "https://validate.perfdrive.com/"}),
+    )
+    with client, pytest.raises(DownloadError):
+        catalog.sync(1)
+    monkeypatch.setattr(
+        sys, "argv", ["banrep-rag", "estado", "--data-dir", str(catalog.root), "--json"]
+    )
+    main()
+    output = json.loads(capsys.readouterr().out)
+    assert output["snapshot"] is None and output["verification"] == []
+    assert output["revalidations"]["ipm-2026-07"]["error_type"] == "blocked"
+    monkeypatch.setattr(sys, "argv", ["banrep-rag", "estado", "--data-dir", str(catalog.root)])
+    main()
+    assert "sin PDF activo" in capsys.readouterr().out
+
+
+def test_cli_text_status_shows_failed_report_outside_active_window(
+    tmp_path, pdf_bytes, monkeypatch, capsys
+):
+    from politica_monetaria_banrep_rag.cli import main
+
+    source = Source([report(7)])
+
+    def respond(request):
+        if str(request.url).endswith("rh4"):
+            return httpx.Response(404)
+        return httpx.Response(200, stream=httpx.ByteStream(pdf_bytes))
+
+    catalog, client = make_catalog(tmp_path, source, respond)
+    with client:
+        before = catalog.sync(1)
+        source.reports.append(report(4))
+        with pytest.raises(DownloadError):
+            catalog.sync(2)
+    assert catalog.current()[0] == before
+    monkeypatch.setattr(sys, "argv", ["banrep-rag", "estado", "--data-dir", str(catalog.root)])
+    main()
+    text = capsys.readouterr().out
+    assert "2026-07" in text and "ipm-2026-04" in text
+    assert "informe fuera del catálogo activo" in text and "permanent" in text
 
 
 def test_tampered_local_file_is_downloaded_again(tmp_path, pdf_bytes):
@@ -380,9 +728,12 @@ def test_snapshot_records_selection_and_acquisition(tmp_path, pdf_bytes):
     with client:
         catalog.sync(1)
     _, snapshot = catalog.current()
-    assert snapshot["version"] == 2
+    assert snapshot["version"] == 3
     assert snapshot["selection"] == {"mode": "latest_n", "max_reports": 1}
-    assert snapshot["reports"][0]["acquisition"] == {"method": "download"}
+    assert snapshot["reports"][0]["acquisition"] == {
+        "method": "download",
+        "verification_status": "verified",
+    }
     assert "verified_at" not in snapshot["reports"][0]["pdf"]
 
 

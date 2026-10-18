@@ -177,16 +177,31 @@ def _status(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         catalog = _offline_catalog(root)
         with catalog.source.client, catalog.downloader.client:
             active = catalog.current()
+            attempts = catalog.revalidations()
+            records = active[1]["reports"] if active else []
+            assert isinstance(records, list)
+            verification = catalog.verification(records, attempts=attempts) if active else []
     except OSError as exc:
         parser.exit(1, f"Error: {_local_failure(exc)}\n")
     except CatalogError as exc:
         parser.exit(1, f"Error: {exc}\n")
     if active is None:
+        if args.json:
+            print(json.dumps({"snapshot": None, "verification": [], "revalidations": attempts},
+                             ensure_ascii=False, indent=2))  # fmt: skip
+            return
         print(f"No hay catálogo activo en {root}. Ejecute «banrep-rag sincronizar» o «importar».")
+        for report_id, attempt in sorted(attempts.items()):
+            if attempt["status"] != "verified":
+                print(
+                    f"  {report_id}: descarga no verificada el {attempt['last_attempt_at']} "
+                    f"({attempt['error_type']}); sin PDF activo."
+                )
         return
     snapshot_id, snapshot = active
     if args.json:
-        print(json.dumps({"snapshot": snapshot_id, **snapshot}, ensure_ascii=False, indent=2))
+        print(json.dumps({"snapshot": snapshot_id, **snapshot, "verification": verification,
+                          "revalidations": attempts}, ensure_ascii=False, indent=2))  # fmt: skip
         return
     selection = snapshot.get("selection") or {"mode": "latest_n"}
     records = snapshot["reports"]
@@ -197,7 +212,8 @@ def _status(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         else f"últimos {selection.get('max_reports', len(records))} informes"
     )
     print(f"Catálogo activo {snapshot_id[:12]} — {mode}")
-    for record in records:
+    active_ids = {record["report"]["report_id"] for record in records}
+    for record, state in zip(records, verification, strict=True):
         report, pdf = record["report"], record["pdf"]
         acquisition = record.get("acquisition") or {"method": "download"}
         origin = "descargado"
@@ -211,6 +227,29 @@ def _status(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             f"  {report['reference_period']}  {report['title']} — {pdf['pages']} págs., "
             f"{origin}, sha256 {str(pdf['sha256'])[:12]}"
         )
+        if state["status"] == "local_import":
+            detail = "importación local; PDF no verificado en la fuente"
+        elif state["status"] == "verified":
+            detail = f"verificado en la fuente el {state['last_successful_verification_at']}"
+        elif state["status"] == "snapshot_outdated":
+            detail = "el último intento verificó otro PDF; el catálogo activo está desactualizado"
+        elif state["status"] == "revalidation_pending":
+            detail = "revalidación pendiente; vigencia en la fuente no confirmada"
+        else:
+            detail = "PDF no disponible para verificar; vigencia en la fuente no confirmada"
+        if state["last_attempt_at"]:
+            detail += f"; último intento {state['last_attempt_at']}"
+        if state["error_type"]:
+            detail += f" ({state['error_type']})"
+        if not state["local_pdf_valid"]:
+            detail += "; PDF local ausente o alterado"
+        print(f"    Verificación: {detail}")
+    for report_id, attempt in sorted(attempts.items()):
+        if report_id not in active_ids and attempt["status"] != "verified":
+            print(
+                f"  {report_id}: intento fallido el {attempt['last_attempt_at']} "
+                f"({attempt['error_type']}); informe fuera del catálogo activo."
+            )
 
 
 def main() -> None:
