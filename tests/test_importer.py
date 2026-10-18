@@ -262,6 +262,12 @@ def test_cli_import_offline_and_status_marks_unverified(tmp_path, capsys, monkey
     out = capsys.readouterr().out
     assert "importación local (no equivale a los últimos N informes)" in out
     assert "importado, metadatos sin verificar" in out
+    assert "PDF no verificado en la fuente" in out
+    monkeypatch.setattr("sys.argv", ["banrep-rag", "estado", "--data-dir", str(data), "--json"])
+    main()
+    verification = json.loads(capsys.readouterr().out)["verification"][0]
+    assert verification["status"] == "local_import"
+    assert verification["last_successful_verification_at"] is None
 
 
 def test_cli_import_reports_missing_file_in_spanish(tmp_path, capsys, monkeypatch):

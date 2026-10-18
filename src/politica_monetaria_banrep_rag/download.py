@@ -283,7 +283,9 @@ class PdfDownloader:
                 if getattr(exc, "error_type", None) == "DownloadError":
                     raise DownloadError(str(exc)) from exc
                 if getattr(exc, "error_type", None) == "Timeout":
-                    raise DownloadError("La validación del PDF superó el tiempo máximo.") from exc
+                    raise DownloadTransientError(
+                        "La validación del PDF superó el tiempo máximo."
+                    ) from exc
                 raise DownloadError(
                     "La validación aislada del PDF falló o agotó la memoria."
                 ) from exc

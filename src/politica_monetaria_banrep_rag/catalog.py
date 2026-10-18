@@ -37,6 +37,8 @@ _REGISTRY_FIELDS = (
     "verified_at",
     "verified_ts",
 )
+_REVALIDATION_STATES = {"verified", "revalidation_pending", "unavailable"}
+_REVALIDATION_ERRORS = {"blocked", "transient", "permanent"}
 
 
 _MAX_IMPORT_BYTES = 30_000_000
@@ -227,7 +229,7 @@ class Catalog:
             if hashlib.sha256(data).hexdigest() != snapshot_id:
                 raise ValueError("Snapshot alterado")
             snapshot = json.loads(data)
-            if snapshot.get("version") not in {1, 2} or not isinstance(
+            if snapshot.get("version") not in {1, 2, 3} or not isinstance(
                 snapshot.get("reports"), list
             ):
                 raise ValueError("Formato de snapshot inválido")
@@ -255,6 +257,8 @@ class Catalog:
             records: list[dict[str, object]] = []
             raw_dir = self.root / "raw"
             registry = self._load_registry()
+            revalidations = self.revalidations()
+            self._save_revalidations(revalidations)  # Persiste el plazo incluso sin descargas.
             downloaded = False
             for position, report in enumerate(reports, start=1):
                 if self.clock() >= deadline:
@@ -282,6 +286,24 @@ class Catalog:
                         pdf = self._download(report, raw_dir, fingerprint)
                     except DownloadError as exc:
                         transient = isinstance(exc, DownloadBlockedError | DownloadTransientError)
+                        last_verified = previous or next(
+                            (entry for entry in reversed(entries) if not _is_import(entry)), None
+                        )
+                        self._record_attempt(
+                            revalidations,
+                            report.report_id,
+                            last_verified,
+                            status=(
+                                "revalidation_pending" if transient and previous else "unavailable"
+                            ),
+                            error_type=(
+                                "blocked"
+                                if isinstance(exc, DownloadBlockedError)
+                                else "transient"
+                                if transient
+                                else "permanent"
+                            ),
+                        )
                         imported = _latest_import(entries) if use_imports else None
                         if previous is None and imported is not None:
                             self.progress(
@@ -308,11 +330,22 @@ class Catalog:
                             != (pdf["sha256"], pdf["download_url"])
                         ] + [pdf]
                         self._save_registry(registry)  # Lo verificado sobrevive a un fallo.
+                        self._record_attempt(
+                            revalidations, report.report_id, pdf, status="verified", error_type=None
+                        )
                 records.append(
                     {
                         "report": metadata,
                         "pdf": {key: pdf[key] for key in _PDF_FIELDS},
-                        "acquisition": {"method": "download"},
+                        "acquisition": {
+                            "method": "download",
+                            "verification_status": (
+                                revalidations.get(report.report_id, {}).get("status", "verified")
+                                if revalidations.get(report.report_id, {}).get("sha256")
+                                in {None, pdf["sha256"]}
+                                else "verified"
+                            ),
+                        },
                     }
                 )
             # Los nombres de los PDF deben ser duraderos antes del puntero.
@@ -326,7 +359,7 @@ class Catalog:
         self, selection: dict[str, object], records: list[dict[str, object]], deadline: float
     ) -> str:
         """Escribe el snapshot inmutable y, si cambió, reemplaza el puntero de forma atómica."""
-        data = _json_bytes({"version": 2, "selection": selection, "reports": records})
+        data = _json_bytes({"version": 3, "selection": selection, "reports": records})
         snapshot_id = hashlib.sha256(data).hexdigest()
         snapshot_path = self.root / "snapshots" / f"{snapshot_id}.json"
         if snapshot_path.exists():
@@ -618,6 +651,173 @@ class Catalog:
                 "El registro local de descargas está dañado; revíselo o elimínelo para "
                 "volver a descargar todo."
             ) from exc
+
+    def revalidations(self) -> dict[str, dict[str, object]]:
+        """Últimos intentos; no confundirlos con la versión inmutable del catálogo."""
+        return self._load_revalidations()[0]
+
+    def _load_revalidations(self) -> tuple[dict[str, dict[str, object]], float | None]:
+        path = self.root / "revalidations.json"
+        if not path.exists():
+            return {}, None  # Sin política persistida no se puede afirmar vigencia.
+        try:
+            data = json.loads(path.read_bytes(), parse_constant=_reject_constant)
+            entries = data["reports"]
+            interval = data["revalidate_seconds"]
+            if (
+                data.get("version") != 1
+                or not isinstance(entries, dict)
+                or isinstance(interval, bool)
+                or not isinstance(interval, int | float)
+                or not 0 <= interval < float("inf")
+            ):
+                raise ValueError("Formato inválido")
+            required = {
+                "last_attempt_at",
+                "last_successful_verification_at",
+                "status",
+                "error_type",
+                "sha256",
+            }
+            for report_id, entry in entries.items():
+                if (
+                    not isinstance(report_id, str)
+                    or not re.fullmatch(r"ipm-\d{4}-\d{2}", report_id)
+                    or not isinstance(entry, dict)
+                    or set(entry) != required
+                    or not isinstance(entry["last_attempt_at"], str)
+                    or not _ISO_SECONDS.fullmatch(entry["last_attempt_at"])
+                    or entry["status"] not in _REVALIDATION_STATES
+                ):
+                    raise ValueError("Entrada de revalidación inválida")
+                success = entry["last_successful_verification_at"]
+                sha = entry["sha256"]
+                error = entry["error_type"]
+                if (
+                    (
+                        success is not None
+                        and (not isinstance(success, str) or not _ISO_SECONDS.fullmatch(success))
+                    )
+                    or (
+                        sha is not None
+                        and (not isinstance(sha, str) or not re.fullmatch(r"[0-9a-f]{64}", sha))
+                    )
+                    or (
+                        entry["status"] == "verified"
+                        and (error is not None or sha is None or success is None)
+                    )
+                    or (entry["status"] != "verified" and error not in _REVALIDATION_ERRORS)
+                    or (
+                        entry["status"] == "revalidation_pending"
+                        and (sha is None or success is None)
+                    )
+                ):
+                    raise ValueError("Entrada de revalidación inválida")
+            return entries, float(interval)
+        except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
+            raise CatalogError(
+                "El registro de revalidaciones está dañado; revíselo antes de continuar."
+            ) from exc
+
+    def verification(
+        self,
+        records: list[dict[str, object]],
+        *,
+        attempts: dict[str, dict[str, object]] | None = None,
+    ) -> list[dict[str, object]]:
+        """Estado observable del PDF activo; combina snapshot, registro e intentos posteriores."""
+        attempts = self.revalidations() if attempts is None else attempts
+        _, interval = self._load_revalidations()
+        registry = self._load_registry()
+        result = []
+        for record in records:
+            report, pdf = record["report"], record["pdf"]
+            acquisition = record.get("acquisition") or {"method": "download"}
+            assert (
+                isinstance(report, dict) and isinstance(pdf, dict) and isinstance(acquisition, dict)
+            )
+            report_id = str(report["report_id"])
+            attempt = attempts.get(report_id)
+            path = self.root / str(pdf["path"])
+            local_valid = False
+            if (
+                pdf.get("path") == f"raw/{report_id}-{pdf['sha256']}.pdf"
+                and not (self.root / "raw").is_symlink()
+            ):
+                try:
+                    self._verify_local(path, str(pdf["sha256"]), int(str(pdf["bytes"])))
+                    local_valid = True
+                except (CatalogError, OSError, ValueError):
+                    pass
+            if acquisition.get("method") == "local_import":
+                status = "local_import"
+                successful = None
+            else:
+                matching = next(
+                    (
+                        entry
+                        for entry in reversed(registry.get(report_id, []))
+                        if not _is_import(entry)
+                        and entry["sha256"] == pdf["sha256"]
+                        and entry["download_url"] == report.get("download_url")
+                    ),
+                    None,
+                )
+                successful = matching["verified_at"] if matching else None
+                if attempt and attempt["sha256"] != pdf["sha256"]:
+                    status = "unavailable" if attempt["error_type"] else "snapshot_outdated"
+                elif attempt and attempt["status"] != "verified":
+                    status = str(attempt["status"])
+                elif matching is None:
+                    status = "unavailable"  # No se puede afirmar cuándo se verificó este PDF.
+                else:
+                    age = self.wall_clock() - _timestamp(matching)
+                    status = (
+                        "verified"
+                        if interval is not None and 0 <= age < interval
+                        else "revalidation_pending"
+                    )
+                if not local_valid:
+                    status = "unavailable"
+            result.append(
+                {
+                    "report_id": report_id,
+                    "status": status,
+                    "last_successful_verification_at": successful,
+                    "last_attempt_at": attempt["last_attempt_at"] if attempt else None,
+                    "error_type": attempt["error_type"] if attempt else None,
+                    "local_pdf_valid": local_valid,
+                }
+            )
+        return result
+
+    def _record_attempt(
+        self,
+        entries: dict[str, dict[str, object]],
+        report_id: str,
+        pdf: dict[str, object] | None,
+        *,
+        status: str,
+        error_type: str | None,
+    ) -> None:
+        entries[report_id] = {
+            "last_attempt_at": datetime.fromtimestamp(self.wall_clock(), UTC).isoformat(
+                timespec="seconds"
+            ),
+            "last_successful_verification_at": pdf["verified_at"] if pdf else None,
+            "status": status,
+            "error_type": error_type,
+            "sha256": pdf["sha256"] if pdf else None,
+        }
+        self._save_revalidations(entries)
+
+    def _save_revalidations(self, entries: dict[str, dict[str, object]]) -> None:
+        path = self.root / "revalidations.json"
+        data = _json_bytes(
+            {"version": 1, "revalidate_seconds": self.revalidate_seconds, "reports": entries}
+        )
+        if not path.exists() or path.read_bytes() != data:
+            _atomic_write(path, data)
 
     def _save_registry(self, registry: dict[str, list[dict[str, object]]]) -> None:
         _atomic_write(
