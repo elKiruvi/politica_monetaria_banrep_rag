@@ -148,6 +148,13 @@ def detect(
         return Detection("respuesta_ambigua", checked_at, message=str(exc)), []
     except httpx.TransportError as exc:
         return Detection("error_red", checked_at, message=f"Fallo de red: {type(exc).__name__}"), []
+    if len(records) != max_reports:
+        # El contrato de la fuente es devolver la ventana completa; otra cosa no es «sin cambios».
+        return Detection(
+            "respuesta_ambigua",
+            checked_at,
+            message=f"La fuente devolvió {len(records)} de {max_reports} informes.",
+        ), []
     changes = classify(reference, records)
     window = tuple(record.report_id for record in records)
     status = "cambios" if changes else "sin_cambios"

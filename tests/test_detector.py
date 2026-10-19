@@ -56,7 +56,7 @@ def test_unchanged_window_ignores_volatile_fields(reference):
     known = detector.load_reference(reference)
     current = [record("2026-07", discovered_at="2027-01-01T00:00:00+00:00",
                       metadata_deposited_at="2027-01-01"), record("2026-04")]  # fmt: skip
-    result, _ = detector.detect(Source(current), known, now=NOW)
+    result, _ = detector.detect(Source(current), known, max_reports=len(current), now=NOW)
     assert result.status == "sin_cambios" and result.changes == ()
     assert result.window == ("ipm-2026-07", "ipm-2026-04")
 
@@ -70,7 +70,7 @@ def test_new_report_document_update_and_metadata_correction(reference):
         ),
         record("2026-04", title="Informe de Política Monetaria - abril de 2026 (corregido)"),
     ]
-    result, _ = detector.detect(Source(current), known, now=NOW)
+    result, _ = detector.detect(Source(current), known, max_reports=len(current), now=NOW)
     assert result.status == "cambios"
     kinds = {change.report_id: (change.kind, change.fields) for change in result.changes}
     assert kinds == {
@@ -82,9 +82,11 @@ def test_new_report_document_update_and_metadata_correction(reference):
 
 def test_change_keys_are_stable_and_specific(reference):
     known = detector.load_reference(reference)
-    first, _ = detector.detect(Source([record("2026-10")]), known, now=NOW)
-    again, _ = detector.detect(Source([record("2026-10")]), known, now=NOW)
-    other, _ = detector.detect(Source([record("2026-10", title="otro")]), known, now=NOW)
+    first, _ = detector.detect(Source([record("2026-10")]), known, max_reports=1, now=NOW)
+    again, _ = detector.detect(Source([record("2026-10")]), known, max_reports=1, now=NOW)
+    other, _ = detector.detect(
+        Source([record("2026-10", title="otro")]), known, max_reports=1, now=NOW
+    )
     assert first.changes[0].key == again.changes[0].key  # mismo cambio: mismo aviso
     assert first.changes[0].key != other.changes[0].key
     assert first.changes[0].key.startswith("ipm-2026-10:nuevo_informe:")
@@ -137,16 +139,18 @@ def test_cli_exit_codes_and_reference_update(monkeypatch, capsys, tmp_path, refe
 
     source = Source([record("2026-07"), record("2026-04")])
     monkeypatch.setattr(cli, "CrossrefReportSource", lambda contact_email=None: source)
-    code, out, _ = run_cli(monkeypatch, capsys, "detectar", "--referencia", str(reference))
+    code, out, _ = run_cli(monkeypatch, capsys, "detectar", "--referencia", str(reference),
+                           "--max-reports", "2")  # fmt: skip
     assert code == 0 and "Sin cambios" in out
     source.records = [record("2026-10"), *source.records]
     code, out, _ = run_cli(monkeypatch, capsys, "detectar", "--referencia", str(reference),
-                           "--json")  # fmt: skip
+                           "--json", "--max-reports", "3")  # fmt: skip
     assert code == 10 and json.loads(out)["changes"][0]["kind"] == "nuevo_informe"
     code, _, err = run_cli(monkeypatch, capsys, "detectar", "--referencia", str(reference),
-                           "--actualizar-referencia")  # fmt: skip
+                           "--actualizar-referencia", "--max-reports", "3")  # fmt: skip
     assert code == 0 and "Referencia actualizada" in err
-    code, _, _ = run_cli(monkeypatch, capsys, "detectar", "--referencia", str(reference))
+    code, _, _ = run_cli(monkeypatch, capsys, "detectar", "--referencia", str(reference),
+                         "--max-reports", "3")  # fmt: skip
     assert code == 0
     source.error = SourceBlockedError("reto antibot")
     code, out, _ = run_cli(monkeypatch, capsys, "detectar", "--referencia", str(reference))
@@ -187,7 +191,7 @@ def test_period_change_and_combined_fields_are_reported(reference):
         record("2026-07", reference_period="2026-08"),
         record("2026-04", download_url="https://repositorio.banrep.gov.co/x.pdf", title="otro"),
     ]
-    result, _ = detector.detect(Source(current), known, now=NOW)
+    result, _ = detector.detect(Source(current), known, max_reports=len(current), now=NOW)
     fields = {c.report_id: (c.kind, c.fields) for c in result.changes}
     assert fields["ipm-2026-07"] == ("correccion_metadatos", ("reference_period",))
     assert fields["ipm-2026-04"] == ("documento_actualizado", ("download_url", "title"))
@@ -221,6 +225,12 @@ def test_cli_refuses_missing_reference_and_shrinking_it(monkeypatch, capsys, tmp
                            str(tmp_path / "no-existe.json"))  # fmt: skip
     assert code == 2 and "créela con" in err
     code, _, err = run_cli(monkeypatch, capsys, "detectar", "--referencia", str(reference),
-                           "--actualizar-referencia")  # fmt: skip
+                           "--actualizar-referencia", "--max-reports", "1")  # fmt: skip
     assert code == 2 and "menor que la referencia" in err
     assert len(detector.load_reference(reference)) == 2  # sin cambios
+
+
+def test_incomplete_window_is_ambiguous(reference):
+    known = detector.load_reference(reference)
+    result, records = detector.detect(Source([record("2026-07")]), known, max_reports=2, now=NOW)
+    assert result.status == "respuesta_ambigua" and records == []

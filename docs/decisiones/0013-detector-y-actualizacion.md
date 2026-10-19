@@ -29,7 +29,7 @@
 - **Actualización local:** `banrep-rag actualizar [--continuar-si-falla] [--usar-importados] [--sin-embeddings]` encadena `sincronizar`, `procesar` e `indexar`.
   - Si la sincronización falla (por ejemplo, por un reto antibot), se detiene.
   - Con `--continuar-si-falla`, procesa e indexa el catálogo activo, avisa de que no equivale a los últimos informes y termina con **código 3** (resultado parcial), para que un bloqueo persistente no pase inadvertido en una tarea programada.
-  - Los errores de uso (por ejemplo, `--max-reports abc`) se rechazan antes de cualquier operación. Con `--sin-sincronizar` se ignoran las opciones de sincronización.
+  - Los errores de uso (por ejemplo, `--max-reports abc`) se rechazan antes de cualquier operación. Con `--sin-sincronizar` no se validan ni se usan las opciones de sincronización. Una ventana vacía o incompleta de la fuente se clasifica como `respuesta_ambigua`.
   - Para programarla, la persona puede añadir a su crontab (no se instala automáticamente):
 
     ```cron

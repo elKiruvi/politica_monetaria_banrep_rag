@@ -968,7 +968,9 @@ def _update(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Plano local: sincroniza según la política de acceso, procesa e indexa. Cada paso conserva
     su protección (snapshot atómico, caché verificada, índice anterior ante fallos)."""
     root = _data_dir(args)
-    _max_reports(parser, args)  # errores de uso antes de cualquier operación
+    if not args.sin_sincronizar:  # errores de uso antes de cualquier operación
+        _max_reports(parser, args)
+        _source_name(parser, args)
     steps = []
     degraded = False
     if not args.sin_sincronizar:
