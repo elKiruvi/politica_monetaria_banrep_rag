@@ -20,7 +20,7 @@ def test_diagnostico(capsys, monkeypatch):
     monkeypatch.setenv("BANREP_MAX_REPORTS", "no_es_entero")
     monkeypatch.setattr("sys.argv", ["banrep-rag", "diagnostico"])
     main()
-    assert "la generación de respuestas aún no" in capsys.readouterr().out
+    assert "las comparaciones entre informes aún no" in capsys.readouterr().out
 
 
 def test_descubrir_json_with_explicit_n(capsys, monkeypatch):

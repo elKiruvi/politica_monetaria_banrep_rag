@@ -59,6 +59,16 @@ uv run --frozen banrep-rag indexar --revertir          # reactiva el índice ant
 
 `indexar` solo usa fragmentos verificados (PDF por hash, caché vigente y metadatos del snapshot); si algo falla, incluido Ollama, el índice activo anterior se conserva. El índice queda ligado al modelo de embeddings (nombre, versión descargada y dimensión): cambiarlo exige reindexar. Cada resultado muestra informe, periodo, página del PDF y página impresa, sección, tipo de unidad, calidad de evidencia, número de celdas atribuibles, las señales de cada vía y, en filas de cuadros, sus notas vinculadas por `table_id`. Filtros: `--informe`, `--desde`/`--hasta` (AAAA-MM), `--seccion`, `--tipo` y `--calidad`. Variables: `BANREP_OLLAMA_URL` y `BANREP_EMBEDDING_MODEL` (`bge-m3` es la alternativa medida). Detalles y métricas en las ADR [0007](docs/decisiones/0007-indice-lexico.md) y [0008](docs/decisiones/0008-embeddings-y-busqueda-hibrida.md).
 
+## Consultas con evidencia citada
+
+```sh
+ollama pull qwen3:4b-instruct      # una vez (~2,5 GB); el proyecto nunca lo descarga solo
+uv run --frozen banrep-rag consultar "¿Cuál fue la proyección de inflación para finales de 2025 según el informe de julio de 2025?"
+uv run --frozen banrep-rag consultar "¿Qué dijo el Banco sobre el precio del petróleo en octubre de 2025?" --json
+```
+
+La respuesta se redacta con Qwen local usando solo los fragmentos recuperados y se **verifica** antes de mostrarse: las citas deben existir y cada cifra debe figurar en la evidencia citada; si no, se muestra que fue rechazada junto con la evidencia revisada. Si la pregunta está fuera del alcance de los informes o la evidencia no basta, el sistema se abstiene. Un informe nombrado en la pregunta («informe de julio de 2025») restringe la búsqueda a ese informe. Límites y mediciones en la [ADR 0009](docs/decisiones/0009-respuestas-fundamentadas.md). Las respuestas no son asesoría financiera ni comunicaciones del Banco.
+
 El diagnóstico de investigación, incluido el bloqueo de las consultas paginadas a la fuente, está en [docs/arquitectura/diagnostico_inicial.md](docs/arquitectura/diagnostico_inicial.md). Las entregas pendientes se describen en los issues. No se exige ningún proveedor comercial para instalar la base.
 
 ## Estado y contribución
