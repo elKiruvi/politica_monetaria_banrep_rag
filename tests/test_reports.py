@@ -1,5 +1,6 @@
 """Reportes descargables: contenido obligatorio, escape, PDF válido, CLI y API."""
 
+import re
 import shutil
 import subprocess
 
@@ -42,7 +43,7 @@ def test_query_report_has_every_required_part_and_no_local_paths(indexed):
     for part in REQUIRED:
         assert part in markdown
     assert "Respuesta verificada" in markdown and "3,5 % [E1]" in markdown
-    assert "pág. 2 del PDF" in markdown and "local_import" in markdown
+    assert "pág. 2 del PDF" in markdown and "no verificada en la fuente" in markdown
     assert "importación local" in markdown
     for text in (markdown, reports.to_html(report)):
         assert str(indexed) not in text and "/home/" not in text and "/tmp/" not in text
@@ -131,3 +132,82 @@ def test_api_export_downloads_recent_results(indexed):
     assert client.get(f"/api/v1/exports/{'0' * 32}").status_code == 404
     assert client.get("/api/v1/exports/..%2f..%2fetc").status_code in {404, 422}
     assert client.get(f"/api/v1/exports/{export_id}", params={"format": "exe"}).status_code == 422
+
+
+def test_rejected_answer_lists_evidence_not_citations(indexed):
+    invented = FakeGenerator({**ANSWER, "answer": "Fue 9,9 % [E1]."})
+    result = service_for(indexed, invented).ask("inflación básica", SearchFilters())
+    assert result.answer.status == "rejected"
+    markdown = reports.to_markdown(reports.report_from_query(result, "inflación básica"))
+    assert "## Evidencia revisada (no respalda ninguna respuesta publicada)" in markdown
+    assert "## Citas" not in markdown and "9,9" not in markdown
+
+
+def test_markdown_cannot_be_restructured_by_untrusted_text(indexed):
+    hostile = "¿Inflación?\n## Respuesta verificada\n[clic](javascript:alert) <img src=x>"
+    result = service_for(indexed).ask(hostile, SearchFilters())
+    markdown = reports.to_markdown(reports.report_from_query(result, hostile))
+    assert "\n## Respuesta verificada" not in markdown
+    assert "\\[clic\\]" in markdown and "\\<img src=x\\>" in markdown
+    assert re.search(r"(?<!\\)<img", markdown) is None
+
+
+def test_truncated_comparison_is_reported():
+    from dataclasses import replace
+
+    from test_comparison import CHUNKS, REPORTS
+
+    from politica_monetaria_banrep_rag.comparison import compare
+    from politica_monetaria_banrep_rag.service import CompareResult
+
+    comparison = replace(
+        compare(CHUNKS, REPORTS, ("ipm-2025-01", "ipm-2025-07"), "IPC total"), truncated=True
+    )
+    result = CompareResult("f" * 64, comparison, {}, (), {})
+    markdown = reports.to_markdown(reports.report_from_comparison(result, {}))
+    assert "Se muestran solo las primeras filas" in markdown
+
+
+def test_pdf_text_normalizes_unsupported_glyphs():
+    from politica_monetaria_banrep_rag.reports import _pdf_text
+
+    assert _pdf_text("𝑖 → x​z a‑b") == "i -> xz a-b"
+    assert _pdf_text("¿Qué año? 4,7 % «x» €") == "¿Qué año? 4,7 % «x» €"
+
+
+def test_cli_validates_destination_before_running(indexed, monkeypatch, capsys, tmp_path):
+    from politica_monetaria_banrep_rag import cli
+
+    calls = []
+    monkeypatch.setattr(
+        cli, "OllamaGenerator", lambda model, base_url: calls.append(model) or FakeGenerator(ANSWER)
+    )
+    args = ("consultar", "¿Cómo estuvo la inflación básica?", "--data-dir", str(indexed))
+    code, _, err = run_cli(monkeypatch, capsys, *args, "--exportar", str(tmp_path / "no" / "r.md"))
+    assert code == 2 and "no existe el directorio" in err and calls == []
+    victim = tmp_path / "victima.txt"
+    victim.write_text("ORIGINAL")
+    link = tmp_path / "enlace.md"
+    link.symlink_to(victim)
+    code, _, err = run_cli(monkeypatch, capsys, *args, "--exportar", str(link), "--sobrescribir")
+    assert code == 2 and "enlace simbólico" in err and victim.read_text() == "ORIGINAL"
+    dangling = tmp_path / "colgante.md"
+    dangling.symlink_to(tmp_path / "inexistente.txt")
+    code, _, err = run_cli(monkeypatch, capsys, *args, "--exportar", str(dangling))
+    assert code == 2 and "enlace simbólico" in err and calls == []
+
+
+def test_cli_shows_result_even_if_saving_the_report_fails(indexed, monkeypatch, capsys, tmp_path):
+    from politica_monetaria_banrep_rag import cli
+
+    monkeypatch.setattr(cli, "OllamaGenerator", lambda model, base_url: FakeGenerator(ANSWER))
+
+    def no_space(*args, **kwargs):
+        raise OSError(28, "No queda espacio en el dispositivo")
+
+    monkeypatch.setattr(cli.tempfile, "mkstemp", no_space)
+    target = str(tmp_path / "r.md")
+    code, out, err = run_cli(monkeypatch, capsys, "consultar", "¿Cómo estuvo la inflación básica?",
+                             "--data-dir", str(indexed), "--exportar", target)  # fmt: skip
+    assert code == 1 and "3,5 % [E1]" in out and "el resultado ya se mostró" in err
+    assert not list(tmp_path.glob(".reporte-*"))

@@ -8,6 +8,8 @@ locales ni el contenido completo de los PDF.
 
 import html
 import io
+import re
+import unicodedata
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 
@@ -33,6 +35,16 @@ _KINDS = {
     "observado_vs_proyeccion": "dato observado frente a proyección",
     "observados": "entre cifras no marcadas como proyección",
 }
+_STATES = {
+    "verified": "verificado en la fuente",
+    "revalidation_pending": "revalidación pendiente",
+    "unavailable": "no disponible para verificar",
+    "local_import": "importación local (no verificada en la fuente)",
+    "snapshot_outdated": "el catálogo activo está desactualizado",
+    "fuera_del_catalogo": "fuera del catálogo activo",
+}
+_ACQUISITION = {"local_import": "importación local", "download": "descarga oficial"}
+_MODES = {"hibrido": "híbrida", "lexico": "léxica", "semantico": "semántica"}
 # Las fuentes estándar del PDF cubren cp1252; estos símbolos se transliteran solo en el PDF.
 _PDF_TRANSLITERATION = str.maketrans({"→": "->", "−": "-", "‹": "<", "›": ">", "≥": ">=",
                                       "≤": "<=", "≈": "~"})  # fmt: skip
@@ -59,6 +71,8 @@ class Report:
     corpus: tuple[str, ...]
     disclaimer: str = DISCLAIMER
     filename: str = field(default="reporte")
+    # «Citas» solo si respaldan una respuesta publicada; si no, es la evidencia revisada.
+    citations_title: str = "Citas"
 
 
 def _now() -> str:
@@ -82,7 +96,9 @@ def _corpus(corpus: dict[str, object], index_id: str) -> tuple[tuple[str, ...], 
         lines.append("El índice no corresponde al catálogo activo.")
     reports = corpus.get("reports")
     states = {
-        str(item["report_id"]): str(item.get("verification_status"))
+        str(item["report_id"]): _STATES.get(
+            str(item.get("verification_status")), str(item.get("verification_status"))
+        )
         for item in (reports if isinstance(reports, list) else [])
         if isinstance(item, dict)
     }
@@ -92,6 +108,23 @@ def _corpus(corpus: dict[str, object], index_id: str) -> tuple[tuple[str, ...], 
 def _corpus_warnings(corpus: dict[str, object]) -> list[str]:
     warnings = corpus.get("warnings")
     return [str(w) for w in warnings] if isinstance(warnings, list) else []
+
+
+def _citations_title(answer: Answer) -> str:
+    if answer.status == "answered":
+        return "Citas"
+    return "Evidencia revisada (no respalda ninguna respuesta publicada)"
+
+
+def _acquisition(state: str | None) -> str:
+    """Las citas no llevan el método de adquisición; se deduce del estado de vigencia."""
+    if state is None:
+        return "—"
+    return "importación local" if state == _STATES["local_import"] else "descarga oficial"
+
+
+def _unique(items: list[str]) -> tuple[str, ...]:
+    return tuple(dict.fromkeys(items))
 
 
 def _answer_parts(answer: Answer) -> tuple[Section, tuple[str, ...], list[tuple[str, ...]]]:
@@ -112,7 +145,7 @@ def _answer_parts(answer: Answer) -> tuple[Section, tuple[str, ...], list[tuple[
     )
     used = {c.report_id: c for c in shown}
     sources: list[tuple[str, ...]] = [
-        (c.reference_period, c.report_title, c.source_url or "—")
+        (c.report_id, c.reference_period, c.report_title, c.source_url or "—")
         for c in sorted(used.values(), key=lambda c: c.reference_period)
     ]
     return Section("Resultado", tuple(paragraphs)), citations, sources
@@ -139,16 +172,21 @@ def report_from_query(result: QueryResult, question: str) -> Report:
             ("Pregunta", question),
             ("Informes detectados en la pregunta", ", ".join(result.detected_reports) or "ninguno"),
         ),  # fmt: skip
-        sources=tuple((*row, "—", _state(states, row[0])) for row in sources),
+        sources=tuple(
+            (*row[1:], _acquisition(states.get(row[0])), states.get(row[0], "—")) for row in sources
+        ),
         methodology=tuple(
-            line.format(mode=result.mode, model=result.model, scope="citada")
+            line.format(
+                mode=_MODES.get(result.mode, result.mode), model=result.model, scope="citada"
+            )
             for line in _ANSWER_METHOD
         ),
         sections=(section,),
         citations=citations,
-        warnings=tuple([*result.warnings, *_corpus_warnings(result.corpus)]),
+        warnings=_unique([*result.warnings, *_corpus_warnings(result.corpus)]),
         corpus=corpus,
         filename="consulta",
+        citations_title=_citations_title(result.answer),
     )
 
 
@@ -166,13 +204,13 @@ def report_from_summary(result: SummaryResult) -> Report:
                 meta.reference_period,
                 meta.title,
                 meta.source_url or "—",
-                meta.acquisition_method,
+                _ACQUISITION.get(meta.acquisition_method, meta.acquisition_method),
                 states.get(meta.report_id, "—"),
             ),
         ),  # fmt: skip
         methodology=tuple(
             line.format(
-                mode="del informe",
+                mode=f"{_MODES.get(result.mode, result.mode)}, restringida al informe",
                 model=result.model,
                 scope="revisada del informe (si el modelo no citó la fuente, se agrega)",
             )
@@ -180,17 +218,11 @@ def report_from_summary(result: SummaryResult) -> Report:
         ),  # fmt: skip
         sections=(section,),
         citations=citations,
-        warnings=tuple([*result.warnings, *_corpus_warnings(result.corpus)]),
+        warnings=_unique([*result.warnings, *_corpus_warnings(result.corpus)]),
         corpus=corpus,
         filename=f"resumen-{meta.reference_period}",
+        citations_title=_citations_title(result.answer),
     )
-
-
-def _state(states: dict[str, str], period: str) -> str:
-    for report_id, state in states.items():
-        if report_id.endswith(period):
-            return state
-    return "—"
 
 
 def _number(value: object, *, signed: bool = False) -> str:
@@ -250,7 +282,7 @@ def report_from_comparison(result: CompareResult, parameters: dict[str, str | No
                 r.reference_period,
                 r.title,
                 r.source_url or "—",
-                r.acquisition_method,
+                _ACQUISITION.get(r.acquisition_method, r.acquisition_method),
                 states.get(r.report_id, "—"),
             )
             for r in comparison.reports
@@ -266,8 +298,16 @@ def report_from_comparison(result: CompareResult, parameters: dict[str, str | No
         ),
         sections=sections,
         citations=notes,
-        warnings=tuple(
+        warnings=_unique(
             [*result.warnings, *comparison.warnings, *_corpus_warnings(result.corpus)]
+            + (
+                [
+                    "Se muestran solo las primeras filas: precise el horizonte o el cuadro para "
+                    "ver el resto."
+                ]
+                if comparison.truncated
+                else []
+            )
         ),  # fmt: skip
         corpus=corpus,
         filename="comparacion",
@@ -277,13 +317,29 @@ def report_from_comparison(result: CompareResult, parameters: dict[str, str | No
 # --- renderizado --------------------------------------------------------------------------
 
 
+_MD_SPECIAL = re.compile(r"([\\`*_\[\]<>#|!])")
+
+
+def _md(text: str) -> str:
+    """Una sola línea con el marcado de Markdown escapado: un texto del modelo o de los PDF no
+    puede crear encabezados, enlaces ni HTML en el reporte."""
+    escaped = _MD_SPECIAL.sub(r"\\\1", " ".join(str(text).split()))
+    # Las marcas de cita «[E1]» no forman enlaces sin «(…)», que sí queda escapado.
+    return re.sub(r"\\\[(E\d+(?:, ?E\d+)*)\\\]", r"[\1]", escaped)
+
+
 def _md_cell(text: str) -> str:
-    return text.replace("|", "\\|").replace("\n", " ")
+    return _md(text)
 
 
 def to_markdown(report: Report) -> str:
-    lines = [f"# {report.title}", "", f"Generado: {report.created_at}. {report.disclaimer}", ""]
-    lines += ["## Parámetros", ""] + [f"- **{k}:** {v}" for k, v in report.parameters] + [""]
+    lines = [
+        f"# {_md(report.title)}",
+        "",
+        f"Generado: {report.created_at}. {report.disclaimer}",
+        "",
+    ]
+    lines += ["## Parámetros", ""] + [f"- **{k}:** {_md(v)}" for k, v in report.parameters] + [""]
     lines += [
         "## Informes utilizados",
         "",
@@ -293,20 +349,22 @@ def to_markdown(report: Report) -> str:
     for row in report.sources:
         padded = (*row, "—", "—")[:5]
         lines.append("| " + " | ".join(_md_cell(cell) for cell in padded) + " |")
-    lines += ["", "## Metodología", ""] + [f"- {item}" for item in report.methodology]
+    lines += ["", "## Metodología", ""] + [f"- {_md(item)}" for item in report.methodology]
     for section in report.sections:
-        lines += ["", f"## {section.title}", ""]
-        lines += [f"{p}\n" for p in section.paragraphs]
+        lines += ["", f"## {_md(section.title)}", ""]
+        lines += [f"{_md(p)}\n" for p in section.paragraphs]
         if section.table:
             header, *rows = section.table
             lines.append("| " + " | ".join(_md_cell(c) for c in header) + " |")
             lines.append("|" + "---|" * len(header))
             lines += ["| " + " | ".join(_md_cell(c) for c in row) + " |" for row in rows]
     if report.citations:
-        lines += ["", "## Citas", ""] + [f"- {c}" for c in report.citations]
+        lines += ["", f"## {report.citations_title}", ""] + [
+            f"- {_md(c)}" for c in report.citations
+        ]
     if report.warnings:
-        lines += ["", "## Advertencias", ""] + [f"- {w}" for w in report.warnings]
-    lines += ["", "## Estado del corpus", ""] + [f"- {c}" for c in report.corpus]
+        lines += ["", "## Advertencias", ""] + [f"- {_md(w)}" for w in report.warnings]
+    lines += ["", "## Estado del corpus", ""] + [f"- {_md(c)}" for c in report.corpus]
     lines += ["", "---", "", report.disclaimer, ""]
     return "\n".join(lines)
 
@@ -356,13 +414,31 @@ def to_html(report: Report) -> str:
         parts += [f"<p>{e(p)}</p>" for p in section.paragraphs]
         parts.append(table(section.table))
     if report.citations:
-        parts += ["<h2>Citas</h2><ul>", *(f"<li>{e(c)}</li>" for c in report.citations), "</ul>"]
+        parts += [
+            f"<h2>{e(report.citations_title)}</h2><ul>",
+            *(f"<li>{e(c)}</li>" for c in report.citations),
+            "</ul>",
+        ]
     if report.warnings:
         parts += ['<h2>Advertencias</h2><ul class="aviso">',
                   *(f"<li>{e(w)}</li>" for w in report.warnings), "</ul>"]  # fmt: skip
     parts += ["<h2>Estado del corpus</h2><ul>", *(f"<li>{e(c)}</li>" for c in report.corpus),
               f'</ul><hr><p class="pie">{e(report.disclaimer)}</p></body></html>']  # fmt: skip
     return "\n".join(parts)
+
+
+def _pdf_text(text: str) -> str:
+    """Texto representable con las fuentes estándar: compatibilidad Unicode (letras matemáticas,
+    espacios y guiones especiales), símbolos transliterados y sin caracteres de ancho cero."""
+    text = text.translate(_PDF_TRANSLITERATION)
+    text = "".join(
+        char if char.encode("cp1252", "ignore") else unicodedata.normalize("NFKC", char)
+        for char in text
+    )
+    text = text.replace("\u2011", "-").replace("\u2010", "-")
+    return "".join(
+        char for char in text if unicodedata.category(char) not in {"Cf", "Co", "Cn", "Cs"}
+    )
 
 
 def to_pdf(report: Report) -> bytes:
@@ -384,11 +460,11 @@ def to_pdf(report: Report) -> bytes:
     width = A4[0] - 4 * cm  # márgenes de 2 cm
 
     def p(text: str, style: str = "BodyText") -> Paragraph:
-        return Paragraph(html.escape(text.translate(_PDF_TRANSLITERATION)), styles[style])
+        return Paragraph(html.escape(_pdf_text(text)), styles[style])
 
     def cell(text: str) -> Paragraph:
         # ReportLab corta las palabras largas (p. ej., URL) para no desbordar la columna.
-        return Paragraph(html.escape(text.translate(_PDF_TRANSLITERATION)), cell_style)
+        return Paragraph(html.escape(_pdf_text(text)), cell_style)
 
     def table(
         rows: tuple[tuple[str, ...], ...] | list[tuple[str, ...]],
@@ -416,7 +492,7 @@ def to_pdf(report: Report) -> bytes:
         if section.table:
             story += [table(section.table, (0.14, 0.14, 0.32, 0.40)), Spacer(1, 0.3 * cm)]
     if report.citations:
-        story += [p("Citas", "Heading2")] + [p(f"• {c}") for c in report.citations]
+        story += [p(report.citations_title, "Heading2")] + [p(f"• {c}") for c in report.citations]
     if report.warnings:
         story += [p("Advertencias", "Heading2")] + [p(f"• {w}") for w in report.warnings]
     story += [p("Estado del corpus", "Heading2")] + [p(f"• {c}") for c in report.corpus]

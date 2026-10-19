@@ -101,6 +101,7 @@ class SummaryResult:
     answer: Answer
     corpus: dict[str, object]
     warnings: list[str] = field(default_factory=list)
+    mode: str = "auto"  # vía de recuperación efectivamente usada
 
 
 def ollama_url() -> str:
@@ -466,5 +467,5 @@ class RagService:
             self._note_privacy(warnings)
             answer = self._generate(active, question, hits, used, model, "all")
             return SummaryResult(
-                active.index_id, meta, subject, model, answer, self.corpus(active), warnings
+                active.index_id, meta, subject, model, answer, self.corpus(active), warnings, used
             )

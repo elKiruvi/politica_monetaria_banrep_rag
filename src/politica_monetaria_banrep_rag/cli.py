@@ -5,6 +5,7 @@ import ipaddress
 import json
 import os
 import sys
+import tempfile
 from contextlib import ExitStack
 from dataclasses import asdict
 from pathlib import Path
@@ -592,24 +593,42 @@ def _print_answer(answer: Answer) -> None:
     print(f"\n{DISCLAIMER}")
 
 
-def _export(parser: argparse.ArgumentParser, args: argparse.Namespace, build) -> None:  # type: ignore[no-untyped-def]
-    """Escribe el reporte si se pidió «--exportar»; el formato sale de la extensión."""
+def _check_export(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Valida «--exportar» antes de la operación: no se pierde una respuesta ya calculada."""
     target = getattr(args, "exportar", None)
     if target is None:
         return
-    output_format = target.suffix.lower().lstrip(".")
-    if output_format not in reports.FORMATS:
+    if target.suffix.lower().lstrip(".") not in reports.FORMATS:
         parser.exit(2, "Error: el archivo del reporte debe terminar en .md, .html o .pdf.\n")
+    if target.is_symlink():
+        parser.exit(2, f"Error: {target} es un enlace simbólico; indique un archivo normal.\n")
     if target.exists() and not args.sobrescribir:
         parser.exit(2, f"Error: {target} ya existe; use «--sobrescribir» para reemplazarlo.\n")
-    data = reports.render(build(), output_format)
-    tmp = target.with_name(f".{target.name}.tmp")
+    if not target.parent.is_dir():
+        parser.exit(2, f"Error: no existe el directorio {target.parent}.\n")
+
+
+def _export(parser: argparse.ArgumentParser, args: argparse.Namespace, build) -> None:  # type: ignore[no-untyped-def]
+    """Escribe el reporte (tras mostrar el resultado). El temporal se crea con O_EXCL en el mismo
+    directorio, no sigue enlaces simbólicos y se elimina ante cualquier fallo o interrupción."""
+    target = getattr(args, "exportar", None)
+    if target is None:
+        return
+    data = reports.render(build(), target.suffix.lower().lstrip("."))
+    tmp_name = None
     try:
-        tmp.write_bytes(data)
-        os.replace(tmp, target)
+        fd, tmp_name = tempfile.mkstemp(prefix=".reporte-", suffix=".tmp", dir=target.parent)
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(data)
+        if target.is_symlink():
+            raise IsADirectoryError(f"{target} es un enlace simbólico")
+        os.replace(tmp_name, target)
+        tmp_name = None
     except OSError as exc:
-        tmp.unlink(missing_ok=True)
-        parser.exit(1, f"Error al guardar el reporte: {_local_failure(exc)}\n")
+        parser.exit(1, f"Error al guardar el reporte (el resultado ya se mostró): {exc}\n")
+    finally:
+        if tmp_name is not None:
+            Path(tmp_name).unlink(missing_ok=True)
     print(f"Reporte guardado en {target}.", file=sys.stderr)
 
 
@@ -618,6 +637,7 @@ def _query(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         filters = _filters(args)
     except ValueError as exc:
         parser.exit(2, f"Error: {exc}\n")
+    _check_export(parser, args)
     try:
         result = _service(args).ask(args.pregunta, filters, top_k=args.top_k, mode=args.modo)
     except ServiceError as exc:
@@ -628,7 +648,7 @@ def _query(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             f"Informes mencionados en la pregunta: {', '.join(result.detected_reports)}.",
             file=sys.stderr if args.json else sys.stdout,
         )
-    _export(parser, args, lambda: reports.report_from_query(result, args.pregunta))
+    build = lambda: reports.report_from_query(result, args.pregunta)  # noqa: E731
     if args.json:
         payload = {
             "index_id": result.index_id,
@@ -641,12 +661,14 @@ def _query(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             "corpus": result.corpus,
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+        _export(parser, args, build)
         return
     warnings = result.corpus.get("warnings", [])
     assert isinstance(warnings, list)
     for warning in warnings:
         print(f"Aviso: {warning}")
     _print_answer(result.answer)
+    _export(parser, args, build)
 
 
 _DIFFERENCE_KINDS = {
@@ -713,6 +735,7 @@ def _print_comparison(comparison: Comparison, notes: dict[str, str]) -> None:
 
 
 def _compare(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    _check_export(parser, args)
     try:
         result = _service(args).compare(
             question=args.pregunta,
@@ -724,10 +747,9 @@ def _compare(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         )
     except ServiceError as exc:
         _fail(parser, "Error", exc)
-    _export(
-        parser,
-        args,
-        lambda: reports.report_from_comparison(
+
+    def build() -> reports.Report:
+        return reports.report_from_comparison(
             result,
             {
                 "Pregunta": args.pregunta,
@@ -736,8 +758,8 @@ def _compare(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                 "Horizonte": args.horizonte,
                 "Cuadro": args.cuadro,
             },
-        ),  # fmt: skip
-    )
+        )
+
     if args.json:
         payload = {
             "index_id": result.index_id,
@@ -748,16 +770,19 @@ def _compare(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             "disclaimer": DISCLAIMER,
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        _export(parser, args, build)
         return
     corpus_warnings = result.corpus.get("warnings", [])
     assert isinstance(corpus_warnings, list)
     for warning in [*result.warnings, *corpus_warnings]:
         print(f"Aviso: {warning}")
     _print_comparison(result.comparison, result.table_notes)
+    _export(parser, args, build)
 
 
 def _summarize(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Resumen trazable de un informe (o de un tema en él) con el flujo verificado de consultar."""
+    _check_export(parser, args)
     try:
         result = _service(args).summarize(
             args.informe, topic=args.tema, top_k=args.top_k, mode=args.modo
@@ -765,13 +790,14 @@ def _summarize(parser: argparse.ArgumentParser, args: argparse.Namespace) -> Non
     except ServiceError as exc:
         _fail(parser, "Error de resumen", exc)
     _print_warnings(result.warnings)
-    _export(parser, args, lambda: reports.report_from_summary(result))
+    build = lambda: reports.report_from_summary(result)  # noqa: E731
     if args.json:
         payload = {"index_id": result.index_id, "report_id": result.report.report_id,
                    "topic": args.tema, "generation_model": result.model,
                    **asdict(result.answer), "corpus": result.corpus,
                    "disclaimer": DISCLAIMER}  # fmt: skip
         print(json.dumps(payload, ensure_ascii=False, indent=2))
+        _export(parser, args, build)
         return
     warnings = result.corpus.get("warnings", [])
     assert isinstance(warnings, list)
@@ -783,6 +809,7 @@ def _summarize(parser: argparse.ArgumentParser, args: argparse.Namespace) -> Non
         "fuente, se agrega."
     )
     _print_answer(result.answer)
+    _export(parser, args, build)
 
 
 def _is_local_host(host: str) -> bool:
