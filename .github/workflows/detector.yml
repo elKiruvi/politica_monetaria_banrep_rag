@@ -1,0 +1,72 @@
+name: Detector de publicaciones
+# Plano GitHub: consulta Crossref, compara con fuentes/informes_conocidos.json y abre un issue por
+# cada cambio (informe nuevo, documento actualizado o corrección de metadatos), sin duplicarlos.
+# No descarga PDF, no usa Ollama ni modelos. Un error de acceso hace fallar el job: nunca se
+# informa como «sin novedades».
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "41 13 * * 1,4" # lunes y jueves 13:41 UTC (08:41 en Colombia)
+permissions:
+  contents: read
+  issues: write
+concurrency:
+  group: detector-publicaciones
+  cancel-in-progress: false
+jobs:
+  detectar:
+    name: Detectar publicaciones
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: astral-sh/setup-uv@v6
+      - run: uv sync --frozen
+      - name: Consultar Crossref
+        id: detectar
+        run: |
+          set +e
+          uv run --frozen banrep-rag detectar --json > deteccion.json
+          echo "codigo=$?" >> "$GITHUB_OUTPUT"
+      - name: Abrir issues por cambio (sin duplicados)
+        if: steps.detectar.outputs.codigo == '10'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          jq -c '.changes[]' deteccion.json | while read -r change; do
+            key=$(jq -r '.key' <<<"$change")
+            kind=$(jq -r '.kind' <<<"$change")
+            report=$(jq -r '.report_id' <<<"$change")
+            existing=$(gh issue list --repo "$GITHUB_REPOSITORY" --state all --limit 20 \
+              --search "\"$key\" in:body" --json number --jq 'length')
+            if [ "$existing" != "0" ]; then
+              echo "Ya existe un issue para $key; no se duplica."
+              continue
+            fi
+            body=$(jq -r '"Cambio detectado por el workflow «Detector de publicaciones».\n\n" +
+              "- Informe: \(.report_id) — \(.title)\n- DOI: \(.doi // "sin DOI")\n" +
+              "- Tipo: \(.kind)\n- Campos: \((.fields | join(", ")) // "")\n\n" +
+              "Siguiente paso en el equipo local: `banrep-rag actualizar` y, si procede, " +
+              "`banrep-rag detectar --actualizar-referencia` en un PR.\n\n" +
+              "Clave del detector: `\(.key)`"' <<<"$change")
+            gh issue create --repo "$GITHUB_REPOSITORY" \
+              --title "Detector: $kind en $report" --body "$body"
+          done
+      - name: Resumen
+        if: always()
+        run: |
+          if [ ! -s deteccion.json ]; then
+            echo "El detector no produjo resultados." >> "$GITHUB_STEP_SUMMARY"; exit 1
+          fi
+          jq -r '"## Detector de publicaciones\n\nEstado: **\(.status)** (\(.checked_at))\n\n" +
+            (if .message != "" then "Detalle: \(.message)\n\n" else "" end) +
+            ([.changes[] | "- \(.report_id): \(.kind)"] | join("\n"))' deteccion.json \
+            >> "$GITHUB_STEP_SUMMARY"
+      - name: Fallar si la fuente no respondió de forma válida
+        if: steps.detectar.outputs.codigo != '0' && steps.detectar.outputs.codigo != '10'
+        run: |
+          echo "El detector no pudo determinar si hay novedades (código ${{ steps.detectar.outputs.codigo }})."
+          exit 1

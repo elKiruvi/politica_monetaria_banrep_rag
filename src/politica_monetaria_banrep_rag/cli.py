@@ -8,9 +8,10 @@ import sys
 import tempfile
 from contextlib import ExitStack
 from dataclasses import asdict
+from datetime import UTC, datetime
 from pathlib import Path
 
-from politica_monetaria_banrep_rag import diagnostics, reports
+from politica_monetaria_banrep_rag import detector, diagnostics, reports
 from politica_monetaria_banrep_rag.answering import Answer
 from politica_monetaria_banrep_rag.catalog import Catalog, CatalogError
 from politica_monetaria_banrep_rag.comparison import (
@@ -840,6 +841,171 @@ def _serve(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 
+def _max_reports(parser: argparse.ArgumentParser, args: argparse.Namespace) -> int:
+    value = (
+        args.max_reports
+        if getattr(args, "max_reports", None) is not None
+        else os.getenv("BANREP_MAX_REPORTS", "12")
+    )
+    try:
+        max_reports = int(value)
+    except ValueError:
+        parser.exit(2, "Error: la cantidad de informes debe ser un número entero entre 1 y 100.\n")
+    if not 1 <= max_reports <= 100:
+        parser.exit(2, "Error: la cantidad de informes debe estar entre 1 y 100.\n")
+    return max_reports
+
+
+def _source_name(parser: argparse.ArgumentParser, args: argparse.Namespace) -> str:
+    source_name = getattr(args, "fuente", None) or os.getenv("BANREP_SOURCE", "crossref")
+    if source_name not in SOURCES:
+        parser.exit(2, "Error: la fuente debe ser «crossref» o «historico».\n")
+    return source_name
+
+
+def _run_sync(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    max_reports = _max_reports(parser, args)
+    source_name = _source_name(parser, args)
+    root = _data_dir(args)
+    try:
+        with ExitStack() as stack:
+            source = _make_source(source_name)
+            stack.callback(source.client.close)
+            downloader = PdfDownloader()
+            stack.callback(downloader.client.close)
+            catalog = Catalog(
+                root,
+                source,
+                downloader,
+                progress=lambda text: print(text, file=sys.stderr),
+                revalidate_seconds=args.revalidar_dias * 86400,
+                download_pause=args.pausa,
+            )
+            if args.dry_run:
+                _print_plan(catalog.plan(max_reports, use_imports=args.usar_importados))
+                return
+            snapshot_id = catalog.sync(max_reports, use_imports=args.usar_importados)
+    except OSError as exc:
+        parser.exit(1, f"Error de sincronización: {_local_failure(exc)}\n")
+    except (SourceError, DownloadError, CatalogError, ValueError) as exc:
+        parser.exit(1, f"Error de sincronización: {exc}\n")
+    print(f"Catálogo activo: {snapshot_id}")
+
+
+DEFAULT_REFERENCE = Path("fuentes/informes_conocidos.json")
+_DETECTION_LABELS = {
+    "sin_cambios": "Sin cambios respecto de la referencia.",
+    "cambios": "Hay cambios respecto de la referencia.",
+    "fuente_no_disponible": (
+        "Fuente no disponible (bloqueo o error del servicio); no se sabe si hay novedades."
+    ),
+    "respuesta_ambigua": "Respuesta ambigua de la fuente; no se sabe si hay novedades.",
+    "error_red": "Error de red; no se sabe si hay novedades.",
+}
+_CHANGE_LABELS = {
+    "nuevo_informe": "nuevo informe",
+    "documento_actualizado": "documento actualizado",
+    "correccion_metadatos": "corrección de metadatos",
+}
+
+
+def _detect(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Compara Crossref con la referencia; el código de salida distingue cada situación."""
+    max_reports = _max_reports(parser, args)
+    reference_path = args.referencia
+    try:
+        reference = detector.load_reference(reference_path) if reference_path.exists() else {}
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
+        parser.exit(2, f"Error: referencia no válida ({exc}).\n")
+    if not reference and not args.actualizar_referencia:
+        # Sin referencia, cada informe parecería nuevo: se exige crearla de forma explícita.
+        parser.exit(
+            2,
+            f"Error: no hay referencia en {reference_path}; créela con "
+            "«banrep-rag detectar --actualizar-referencia».\n",
+        )
+    try:
+        with ExitStack() as stack:
+            source = CrossrefReportSource(contact_email=os.getenv("BANREP_CONTACT_EMAIL") or None)
+            stack.callback(source.client.close)
+            result, records = detector.detect(source, reference, max_reports=max_reports)
+    except ValueError as exc:
+        parser.exit(2, f"Error: {exc}\n")
+    if args.actualizar_referencia:
+        if result.status not in {"sin_cambios", "cambios"}:
+            parser.exit(1, "Error: no se actualiza la referencia sin una respuesta válida.\n")
+        if len(records) < len(reference):
+            parser.exit(
+                2,
+                f"Error: la ventana actual ({len(records)} informes) es menor que la referencia "
+                f"({len(reference)}); no se reduce para no generar avisos falsos después.\n",
+            )
+        try:
+            detector.write_reference(reference_path, records, now=datetime.now(UTC))
+        except OSError as exc:
+            parser.exit(1, f"Error al guardar la referencia: {_local_failure(exc)}\n")
+        print(
+            f"Referencia actualizada: {reference_path} ({len(records)} informes).", file=sys.stderr
+        )
+    if args.json:
+        payload = {**result.to_dict(), "reference": str(reference_path),
+                   "reference_known": len(reference)}  # fmt: skip
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+    else:
+        print(f"{_DETECTION_LABELS[result.status]} ({result.checked_at})")
+        if not reference:
+            print(f"Aviso: no hay referencia en {reference_path}; todo informe se considera nuevo.")
+        if result.message:
+            print(f"Detalle: {result.message}")
+        for change in result.changes:
+            fields = f" ({', '.join(change.fields)})" if change.fields else ""
+            print(f"  {change.report_id}: {_CHANGE_LABELS[change.kind]}{fields} — {change.title}")
+    if not args.actualizar_referencia:
+        parser.exit(detector.EXIT_CODES[result.status], "")
+
+
+def _update(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Plano local: sincroniza según la política de acceso, procesa e indexa. Cada paso conserva
+    su protección (snapshot atómico, caché verificada, índice anterior ante fallos)."""
+    root = _data_dir(args)
+    if not args.sin_sincronizar:  # errores de uso antes de cualquier operación
+        _max_reports(parser, args)
+        _source_name(parser, args)
+    steps = []
+    degraded = False
+    if not args.sin_sincronizar:
+        sync_args = argparse.Namespace(
+            **{**vars(args), "command": "sincronizar", "fuente": None, "dry_run": False}
+        )
+        try:
+            _run_sync(parser, sync_args)
+            steps.append("sincronización")
+        except SystemExit as exc:
+            if exc.code in (0, None):
+                steps.append("sincronización")
+            elif not args.continuar_si_falla:
+                raise
+            else:
+                degraded = True
+                print(
+                    "Aviso: la sincronización no se completó; se continúa con el catálogo activo "
+                    "(no equivale a los últimos informes publicados).",
+                    file=sys.stderr,
+                )
+    _process(parser, argparse.Namespace(data_dir=str(root), forzar=False, procesos=args.procesos,
+                                        json=False))  # fmt: skip
+    steps.append("procesamiento")
+    _index(parser, argparse.Namespace(data_dir=str(root), forzar=False, revertir=False,
+                                      modelo_embeddings=args.modelo_embeddings,
+                                      sin_embeddings=args.sin_embeddings, json=False))  # fmt: skip
+    steps.append("indexación")
+    if degraded:
+        # Código 3: el índice quedó al día con el catálogo activo, pero la fuente no se sincronizó.
+        print(f"Actualización parcial: {', '.join(steps)}; la sincronización falló.")
+        parser.exit(3, "")
+    print(f"Actualización completada: {', '.join(steps)}.")
+
+
 def _evaluate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     try:
         queries = load_queries(args.consultas)
@@ -1129,6 +1295,41 @@ def main() -> None:
     )
     evaluate_cmd.add_argument("--modo", choices=SEARCH_MODES, default="auto")
     evaluate_cmd.add_argument("--json", action="store_true", help="Emite el informe en JSON")
+    detect_cmd = subcommands.add_parser(
+        "detectar", help="Detecta informes nuevos o cambios en Crossref frente a una referencia"
+    )
+    detect_cmd.add_argument("--max-reports", help="Cantidad de informes (por defecto: 12)")
+    detect_cmd.add_argument(
+        "--referencia", type=Path, default=DEFAULT_REFERENCE,
+        help=f"Archivo de informes conocidos (por defecto {DEFAULT_REFERENCE})",
+    )  # fmt: skip
+    detect_cmd.add_argument(
+        "--actualizar-referencia", action="store_true",
+        help="Reescribe la referencia con la ventana actual de Crossref",
+    )  # fmt: skip
+    detect_cmd.add_argument("--json", action="store_true", help="Emite el resultado en JSON")
+    update_cmd = subcommands.add_parser(
+        "actualizar",
+        help="Plano local: sincroniza, procesa e indexa (conserva lo anterior si falla)",
+    )
+    update_cmd.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
+    update_cmd.add_argument("--max-reports", help="Cantidad de informes (por defecto: 12)")
+    update_cmd.add_argument(
+        "--sin-sincronizar", action="store_true", help="Solo procesa e indexa el catálogo activo"
+    )
+    update_cmd.add_argument(
+        "--continuar-si-falla", action="store_true",
+        help="Si la sincronización falla, procesa e indexa el catálogo activo",
+    )  # fmt: skip
+    update_cmd.add_argument(
+        "--usar-importados", action="store_true",
+        help="Si una descarga falla, usa el PDF importado localmente",
+    )  # fmt: skip
+    update_cmd.add_argument("--revalidar-dias", type=_non_negative, default=30.0)
+    update_cmd.add_argument("--pausa", type=_pause, default=10.0)
+    update_cmd.add_argument("--procesos", type=int, default=1, choices=range(1, 9), metavar="N")
+    update_cmd.add_argument("--modelo-embeddings", metavar="MODELO")
+    update_cmd.add_argument("--sin-embeddings", action="store_true")
     args = parser.parse_args()
     handler = {
         "indexar": _index,
@@ -1139,6 +1340,8 @@ def main() -> None:
         "comparar": _compare,
         "resumir": _summarize,
         "servir": _serve,
+        "detectar": _detect,
+        "actualizar": _update,
     }.get(args.command)
     if handler is not None:
         handler(parser, args)
@@ -1163,49 +1366,11 @@ def main() -> None:
             print(json.dumps(access, ensure_ascii=False, indent=2))
         else:
             print(diagnostics.render(access))
-    elif args.command in {"descubrir", "sincronizar"}:
-        value = (
-            args.max_reports
-            if args.max_reports is not None
-            else os.getenv("BANREP_MAX_REPORTS", "12")
-        )
-        try:
-            max_reports = int(value)
-        except ValueError:
-            parser.exit(
-                2, "Error: la cantidad de informes debe ser un número entero entre 1 y 100.\n"
-            )
-        if not 1 <= max_reports <= 100:
-            parser.exit(2, "Error: la cantidad de informes debe estar entre 1 y 100.\n")
-        source_name = args.fuente or os.getenv("BANREP_SOURCE", "crossref")
-        if source_name not in SOURCES:
-            parser.exit(2, "Error: la fuente debe ser «crossref» o «historico».\n")
-        if args.command == "sincronizar":
-            root = _data_dir(args)
-            try:
-                with ExitStack() as stack:
-                    source = _make_source(source_name)
-                    stack.callback(source.client.close)
-                    downloader = PdfDownloader()
-                    stack.callback(downloader.client.close)
-                    catalog = Catalog(
-                        root,
-                        source,
-                        downloader,
-                        progress=lambda text: print(text, file=sys.stderr),
-                        revalidate_seconds=args.revalidar_dias * 86400,
-                        download_pause=args.pausa,
-                    )
-                    if args.dry_run:
-                        _print_plan(catalog.plan(max_reports, use_imports=args.usar_importados))
-                        return
-                    snapshot_id = catalog.sync(max_reports, use_imports=args.usar_importados)
-            except OSError as exc:
-                parser.exit(1, f"Error de sincronización: {_local_failure(exc)}\n")
-            except (SourceError, DownloadError, CatalogError, ValueError) as exc:
-                parser.exit(1, f"Error de sincronización: {exc}\n")
-            print(f"Catálogo activo: {snapshot_id}")
-            return
+    elif args.command == "sincronizar":
+        _run_sync(parser, args)
+    elif args.command == "descubrir":
+        max_reports = _max_reports(parser, args)
+        source_name = _source_name(parser, args)
         try:
             with ExitStack() as stack:
                 source = _make_source(source_name)

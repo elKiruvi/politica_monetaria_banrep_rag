@@ -80,6 +80,15 @@ uv run --frozen banrep-rag resumir 2026-01 --tema "mercado laboral"
 
 `comparar` no usa el modelo de lenguaje: toma solo celdas atribuidas de los cuadros, compara únicamente el mismo cuadro, fila, horizonte y unidad, calcula las diferencias en Python (en puntos porcentuales cuando la unidad es porcentual), distingue revisiones de proyección y datos observados, advierte diferencias de redondeo y cita cada valor con su página. `resumir` redacta con Qwen y verifica las cifras contra la evidencia del informe. Detalles en la [ADR 0010](docs/decisiones/0010-comparaciones-y-resumenes.md).
 
+## Detección de publicaciones y actualización local
+
+```sh
+uv run --frozen banrep-rag detectar                 # 0 sin cambios, 10 cambios, 20-22 la fuente no respondió de forma válida
+uv run --frozen banrep-rag actualizar --continuar-si-falla   # sincroniza (si se puede), procesa e indexa; 3 = parcial
+```
+
+El workflow «Detector de publicaciones» consulta Crossref dos veces por semana y abre un issue por cada informe nuevo, documento actualizado o corrección de metadatos, sin duplicarlos. No descarga PDF ni usa modelos. La actualización real ocurre en el equipo local, que debe estar encendido; puede programarse con cron. Detalles en la [ADR 0013](docs/decisiones/0013-detector-y-actualizacion.md).
+
 ## Reportes descargables
 
 ```sh
