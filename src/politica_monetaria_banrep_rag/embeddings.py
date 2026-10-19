@@ -5,6 +5,7 @@ de texto y a la dimensión: si cualquiera cambia, el índice no se usa y hay que
 """
 
 import ipaddress
+import os
 from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from typing import Protocol
@@ -83,8 +84,11 @@ def normalize(vectors: np.ndarray, expected_dimension: int | None = None) -> np.
 
 
 def is_local_url(url: str) -> bool:
+    """Ollama en este mismo equipo. ``BANREP_OLLAMA_LOCAL_HOSTS`` declara otros nombres que son el
+    mismo equipo (p. ej., ``host.docker.internal`` u ``ollama`` en Docker Compose)."""
     host = urlsplit(url).hostname or ""
-    if host == "localhost":
+    declared = {h.strip().lower() for h in os.getenv("BANREP_OLLAMA_LOCAL_HOSTS", "").split(",")}
+    if host == "localhost" or host.lower() in declared - {""}:
         return True
     try:
         return ipaddress.ip_address(host).is_loopback

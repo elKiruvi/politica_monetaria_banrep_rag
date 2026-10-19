@@ -1,0 +1,60 @@
+# Uso: docker compose up -d                      (Ollama instalado en el equipo)
+#      docker compose --profile ollama up -d     (Ollama en contenedor, CPU)
+#      docker compose --profile ollama-gpu up -d (Ollama en contenedor, GPU NVIDIA)
+# Con Ollama en contenedor: BANREP_OLLAMA_URL=http://ollama:11434 docker compose --profile ollama up -d
+services:
+  banrep-rag:
+    build: .
+    image: banrep-rag:local
+    # Para escribir en el catálogo propio: BANREP_UID=$(id -u) BANREP_GID=$(id -g) docker compose up -d
+    user: "${BANREP_UID:-10001}:${BANREP_GID:-10001}"
+    ports:
+      - "127.0.0.1:8000:8000" # solo en este equipo
+    volumes:
+      - ${BANREP_DATOS:-./data/catalogo}:/datos
+    environment:
+      BANREP_OLLAMA_URL: ${BANREP_OLLAMA_URL:-http://host.docker.internal:11434}
+      BANREP_OLLAMA_LOCAL_HOSTS: host.docker.internal,ollama
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    mem_limit: 4g
+    cpus: 2
+    restart: unless-stopped
+
+  ollama:
+    profiles: ["ollama"]
+    image: ollama/ollama:0.33.2
+    volumes:
+      - ollama:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    restart: unless-stopped
+
+  ollama-gpu:
+    profiles: ["ollama-gpu"]
+    image: ollama/ollama:0.33.2
+    networks:
+      default:
+        aliases: [ollama] # misma URL http://ollama:11434 que el perfil de CPU
+    volumes:
+      - ollama:/root/.ollama
+    ports:
+      - "127.0.0.1:11434:11434"
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    restart: unless-stopped
+
+volumes:
+  ollama:

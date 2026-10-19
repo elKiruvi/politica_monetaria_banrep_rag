@@ -89,6 +89,15 @@ uv run --frozen banrep-rag actualizar --continuar-si-falla   # sincroniza (si se
 
 El workflow «Detector de publicaciones» consulta Crossref dos veces por semana y abre un issue por cada informe nuevo, documento actualizado o corrección de metadatos, sin duplicarlos. No descarga PDF ni usa modelos. La actualización real ocurre en el equipo local, que debe estar encendido; puede programarse con cron. Detalles en la [ADR 0013](docs/decisiones/0013-detector-y-actualizacion.md).
 
+## Docker (opcional)
+
+```sh
+docker compose build
+BANREP_UID=$(id -u) BANREP_GID=$(id -g) docker compose up -d   # http://127.0.0.1:8000 con data/catalogo como volumen
+```
+
+La imagen no incluye PDF ni datos, corre sin privilegios y publica el puerto solo en este equipo. Usa el Ollama instalado en el equipo, o uno en contenedor con `--profile ollama` (CPU) o `--profile ollama-gpu` (NVIDIA). `uv` sigue siendo la vía principal. Detalles en la [ADR 0014](docs/decisiones/0014-docker.md).
+
 ## Reportes descargables
 
 ```sh

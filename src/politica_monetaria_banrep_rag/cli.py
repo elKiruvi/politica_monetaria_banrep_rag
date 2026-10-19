@@ -835,7 +835,10 @@ def _serve(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
 
     from politica_monetaria_banrep_rag.api import LOCAL_HOSTS, create_app
 
-    hosts = ["*"] if args.permitir_red else [*LOCAL_HOSTS, args.host]
+    # Con --permitir-red la protección contra DNS rebinding se mantiene: se aceptan los hosts
+    # locales y los declarados en BANREP_ALLOWED_HOSTS; «*» solo si se declara explícitamente.
+    extra = [h.strip() for h in os.getenv("BANREP_ALLOWED_HOSTS", "").split(",") if h.strip()]
+    hosts = [*LOCAL_HOSTS, args.host, *extra] if args.permitir_red else [*LOCAL_HOSTS, args.host]
     app = create_app(_service(args), allowed_hosts=hosts)
     print(f"Sirviendo en http://{args.host}:{args.port} (Ctrl+C para detener). {DISCLAIMER}")
     uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
