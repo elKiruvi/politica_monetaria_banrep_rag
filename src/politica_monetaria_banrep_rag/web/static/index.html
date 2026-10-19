@@ -1,0 +1,103 @@
+<!doctype html>
+<html lang="es">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Informes de Política Monetaria — consulta local</title>
+  <link rel="stylesheet" href="/static/app.css">
+  <script src="/static/app.js" defer></script>
+</head>
+<body>
+  <a class="skip" href="#contenido">Ir al contenido</a>
+  <header>
+    <h1>Informes de Política Monetaria</h1>
+    <p class="tagline">Consulta local con evidencia citada. <strong>Proyecto no oficial</strong>: no representa al Banco de la República ni es asesoría financiera.</p>
+  </header>
+
+  <section id="estado" aria-labelledby="estado-titulo" class="panel">
+    <h2 id="estado-titulo">Estado</h2>
+    <dl class="status">
+      <div><dt>Índice</dt><dd id="estado-indice">Consultando…</dd></div>
+      <div><dt>Corpus</dt><dd id="estado-corpus">—</dd></div>
+      <div><dt>Ollama</dt><dd id="estado-ollama">—</dd></div>
+    </dl>
+    <ul id="estado-avisos" class="warnings" aria-live="polite"></ul>
+    <details>
+      <summary>Informes indexados</summary>
+      <table id="tabla-informes">
+        <caption class="sr-only">Informes del índice activo</caption>
+        <thead><tr><th scope="col">Periodo</th><th scope="col">Informe</th><th scope="col">Publicado</th><th scope="col">Vigencia en la fuente</th></tr></thead>
+        <tbody></tbody>
+      </table>
+    </details>
+  </section>
+
+  <main id="contenido">
+    <nav aria-label="Herramientas" class="tabs" role="tablist">
+      <button role="tab" aria-selected="true" aria-controls="tab-preguntar" id="b-preguntar">Preguntar</button>
+      <button role="tab" aria-selected="false" aria-controls="tab-comparar" id="b-comparar">Comparar</button>
+      <button role="tab" aria-selected="false" aria-controls="tab-resumir" id="b-resumir">Resumir</button>
+      <button role="tab" aria-selected="false" aria-controls="tab-buscar" id="b-buscar">Buscar evidencia</button>
+    </nav>
+
+    <section id="tab-preguntar" role="tabpanel" aria-labelledby="b-preguntar" class="panel">
+      <form id="form-preguntar">
+        <label for="pregunta">Pregunta</label>
+        <textarea id="pregunta" name="question" rows="2" maxlength="500" required placeholder="¿Cuál fue la proyección de inflación para finales de 2025 según el informe de julio de 2025?"></textarea>
+        <div class="row">
+          <label>Desde <input name="period_from" type="month" min="2000-01" pattern="\d{4}-(0[1-9]|1[0-2])" placeholder="AAAA-MM"></label>
+          <label>Hasta <input name="period_to" type="month" min="2000-01" pattern="\d{4}-(0[1-9]|1[0-2])" placeholder="AAAA-MM"></label>
+          <button type="submit">Preguntar</button>
+        </div>
+        <p class="hint">Sugerencias:
+          <button type="button" class="suggestion">¿Qué dijo el informe de octubre de 2025 sobre el precio del petróleo?</button>
+          <button type="button" class="suggestion">¿Qué riesgos para la inflación destacó el informe de enero de 2026?</button>
+          <button type="button" class="suggestion">¿Cuáles fueron las expectativas de inflación a dos y cinco años en el informe de julio de 2025?</button>
+        </p>
+      </form>
+      <div class="result" id="resultado-preguntar" aria-live="polite"></div>
+    </section>
+
+    <section id="tab-comparar" role="tabpanel" aria-labelledby="b-comparar" class="panel" hidden>
+      <form id="form-comparar">
+        <label for="comparar-pregunta">Pregunta (o elija informes e indicador)</label>
+        <input id="comparar-pregunta" name="question" maxlength="500" placeholder="¿Cómo cambiaron las proyecciones de inflación entre enero y julio de 2025?">
+        <div class="row">
+          <label>Informes <select name="reports" multiple size="4" id="comparar-informes"></select></label>
+          <label>Indicador <input name="indicator" maxlength="200" placeholder="IPC total"></label>
+          <label>Horizonte <input name="horizon" maxlength="40" placeholder="2025"></label>
+          <label><input type="checkbox" name="include_observed"> Incluir filas sin proyecciones</label>
+          <button type="submit">Comparar</button>
+        </div>
+      </form>
+      <div class="result" id="resultado-comparar" aria-live="polite"></div>
+    </section>
+
+    <section id="tab-resumir" role="tabpanel" aria-labelledby="b-resumir" class="panel" hidden>
+      <form id="form-resumir">
+        <div class="row">
+          <label>Informe <select name="report" id="resumir-informe" required></select></label>
+          <label>Tema (opcional) <input name="topic" maxlength="200" placeholder="mercado laboral"></label>
+          <button type="submit">Resumir</button>
+        </div>
+      </form>
+      <div class="result" id="resultado-resumir" aria-live="polite"></div>
+    </section>
+
+    <section id="tab-buscar" role="tabpanel" aria-labelledby="b-buscar" class="panel" hidden>
+      <form id="form-buscar">
+        <div class="row">
+          <label class="grow">Consulta <input name="query" maxlength="500" required placeholder="expectativas de inflación"></label>
+          <label>Resultados <input name="top_k" type="number" min="1" max="50" value="5"></label>
+          <button type="submit">Buscar</button>
+        </div>
+      </form>
+      <div class="result" id="resultado-buscar" aria-live="polite"></div>
+    </section>
+  </main>
+
+  <footer>
+    <p>Los informes pertenecen al Banco de la República; este proyecto no los redistribuye. Las respuestas se generan localmente y se verifican contra la evidencia citada, pero pueden contener errores de interpretación: consulte siempre la página del informe original.</p>
+  </footer>
+</body>
+</html>

@@ -1,6 +1,6 @@
 # Estado del desarrollo — checkpoint F7
 
-**Actualizado:** 19 de octubre de 2026. H1–H5 fusionadas (#27–#31 cerrados). **F5 cerrada** (#6): PR #37 y #38, `main` `763b655`, CI post-merge aprobado (run 39202051557). **F6 cerrada** (#7): PR #39 y #40, `main` `33fb27f`, CI post-merge aprobado (run 39222532131). **Fase en curso:** F7 (#8), rama `feat/api-service` (F7A: servicio y API).
+**Actualizado:** 19 de octubre de 2026. H1–H5 fusionadas (#27–#31 cerrados). **F5 cerrada** (#6): PR #37 y #38, `main` `763b655`, CI post-merge aprobado (run 39202051557). **F6 cerrada** (#7): PR #39 y #40, `main` `33fb27f`, CI post-merge aprobado (run 39222532131). F7A fusionada (PR #41, `main` `def1e47`, CI post-merge aprobado, run 39248940090). **Fase en curso:** F7 (#8), rama `feat/web-ui` (F7B: interfaz web).
 
 ## Resumen por fase
 
@@ -14,7 +14,7 @@
 | F4 Procesamiento | #5 | **completada**; H1–H5 fusionadas (PR #32–#36) | ADR 0006 |
 | F5 Indexación y recuperación | #6 | **cerrada**: FTS5, FAISS, RRF híbrida, manifiesto, reversión, evaluación | ADR 0007, 0008 |
 | F6 Generación y comparación | #7 | **cerrada**: `consultar` verificado, `comparar` determinista, `resumir` trazable | ADR 0009, 0010 |
-| F7 Producto | #8 | **F7A en revisión** (PR #41): servicio compartido, API FastAPI local, `servir`; **F7B** (web) preparada en la rama `feat/web-ui` sin PR; **F7C** (reportes) pendiente | ADR 0011 |
+| F7 Producto | #8 | F7A fusionada (servicio, API, `servir`); **F7B** (web) en PR; **F7C** (reportes) pendiente | ADR 0011 |
 | F8–F10 | #9–#11 | pendientes | — |
 
 ## Qué funciona hoy (comandos reales)
@@ -47,12 +47,10 @@
 
 ### Trabajo en curso (19-10-2026)
 
-- **PR #41 (F7A):** se corrigieron los hallazgos de la revisión independiente (0 altos; 4 medios). Falta la confirmación del revisor y la CI del nuevo SHA; después, fusionar y verificar la CI de `main`.
-- **F7B, interfaz web:** rama `feat/web-ui`, apilada sobre F7A, en el worktree `../politica_monetaria_banrep_rag-worktrees/f7b-web`, todavía sin commit ni PR.
-  - Contenido: HTML, CSS y JS propios en `src/politica_monetaria_banrep_rag/web/static`, servidos en `/`, sin CDN ni scripts en línea; el texto de los PDF se inserta solo con `textContent`. Hay 10 pruebas en `tests/test_web.py`.
-  - Comprobado con el servidor real: todas las llamadas de la página responden.
-  - **Falta la revisión visual en un navegador** (no hay herramienta de navegador en esta sesión): abrir `http://127.0.0.1:8000` tras `banrep-rag servir` y probar cada pestaña.
-  - Pasos: rebasar sobre `main` tras fusionar #41, ajustar `allowed_hosts` de las pruebas (`testserver`), abrir PR y revisión.
+- **F7B, interfaz web:** rama `feat/web-ui`, worktree `../politica_monetaria_banrep_rag-worktrees/f7b-web`.
+  - Contenido: HTML, CSS y JS propios servidos en `/`, sin CDN ni scripts en línea; el texto de los PDF se inserta solo con `textContent`. Hay 10 pruebas en `tests/test_web.py`.
+  - Con el servidor real, todas las llamadas de la página responden.
+  - **Falta la revisión visual en un navegador** (en esta sesión no hubo herramienta de navegador): abrir `http://127.0.0.1:8000` tras `banrep-rag servir` y probar cada pestaña, con y sin Ollama.
 
 ### Fases siguientes
 
@@ -94,4 +92,4 @@ uv sync --frozen && uv run --frozen pytest -q
 uv run --frozen banrep-rag estado --data-dir data/catalogo
 uv run --frozen banrep-rag indexar --data-dir data/catalogo && uv run --frozen banrep-rag evaluar --data-dir data/catalogo
 ```
-Leer `CLAUDE.md` y las ADR 0001–0011. Retomar por «Trabajo en curso»: fusionar #41, rebasar `feat/web-ui`, abrir su PR y seguir con F7C.
+Leer `CLAUDE.md` y las ADR 0001–0011. Retomar por «Trabajo en curso»: cerrar el PR de F7B (revisión y CI) y seguir con F7C.

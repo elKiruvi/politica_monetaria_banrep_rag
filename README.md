@@ -80,7 +80,7 @@ uv run --frozen banrep-rag resumir 2026-01 --tema "mercado laboral"
 
 `comparar` no usa el modelo de lenguaje: toma solo celdas atribuidas de los cuadros, compara únicamente el mismo cuadro, fila, horizonte y unidad, calcula las diferencias en Python (en puntos porcentuales cuando la unidad es porcentual), distingue revisiones de proyección y datos observados, advierte diferencias de redondeo y cita cada valor con su página. `resumir` redacta con Qwen y verifica las cifras contra la evidencia del informe. Detalles en la [ADR 0010](docs/decisiones/0010-comparaciones-y-resumenes.md).
 
-## API local
+## Interfaz web y API local
 
 ```sh
 uv run --frozen banrep-rag servir            # http://127.0.0.1:8000 ; esquema en /api/v1/openapi.json
@@ -88,6 +88,8 @@ curl -s http://127.0.0.1:8000/api/v1/ready
 curl -s -X POST http://127.0.0.1:8000/api/v1/query -H 'Content-Type: application/json' \
   -d '{"question": "¿Qué dijo el informe de octubre de 2025 sobre el precio del petróleo?"}'
 ```
+
+La interfaz web está en `http://127.0.0.1:8000`: preguntar, comparar, resumir y buscar evidencia, con el estado del corpus y de Ollama visible. No usa recursos externos.
 
 Rutas `/api/v1`: `health`, `ready`, `status`, `reports`, `search`, `query`, `compare` y `summarize`. Usan el mismo servicio que la CLI, con los mismos filtros, verificaciones y avisos. Por seguridad escucha solo en localhost, rechaza cabeceras `Host` ajenas, no habilita CORS y no tiene autenticación: no la exponga a la red sin un proxy con autenticación (`--permitir-red` es explícito). Detalles en la [ADR 0011](docs/decisiones/0011-api-local.md).
 
