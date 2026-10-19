@@ -18,12 +18,12 @@ uv run --frozen pytest -q            # offline: tests/conftest.py bloquea la red
 BANREP_LIVE=1 uv run --frozen pytest -q -k live   # opcional, consulta Crossref
 BANREP_OLLAMA_LIVE=1 uv run --frozen pytest -q -k ollama   # opcional, Ollama local con embeddinggemma
 uv run --frozen pre-commit run --all-files
-uv run --frozen banrep-rag --help    # descubrir, sincronizar, importar, estado, procesar, indexar, buscar, consultar, comparar, resumir, validar-indice, evaluar
+uv run --frozen banrep-rag --help    # descubrir, sincronizar, importar, estado, procesar, indexar, buscar, consultar, comparar, resumir, servir, validar-indice, evaluar
 ```
 Con `set -o pipefail` cuando se encadene `pytest … | tail`: sin él, un fallo pasa inadvertido.
 
 ## Módulos
-`urls.py` (política de URL oficiales) · `source.py` (histórico, `ReportRecord`) · `crossref.py` (descubridor principal) · `download.py` (descarga segura) · `catalog.py` (snapshots, registro de adquisiciones, importación) · `importer.py` (identificación de PDF locales) · `isolation.py` (procesos aislados para PDF no confiables) · `layout.py` y `tables.py` (bloques y cuadros con pdfminer) · `processing.py`, `chunking.py`, `processed_store.py` (unidades, fragmentos, caché) · `retrieval.py`, `corpus.py`, `lexical.py`, `index_store.py` (fragmentos verificados, FTS5, manifiesto y activación atómica de índices) · `embeddings.py`, `vector.py`, `fusion.py` (Ollama, FAISS, RRF) · `generation.py`, `answering.py` (Qwen y respuestas verificadas) · `comparison.py` (comparaciones deterministas) · `evaluation.py` (métricas con `evaluacion/`) · `diagnostics.py` · `cli.py`. Decisiones en `docs/decisiones/`.
+`urls.py` (política de URL oficiales) · `source.py` (histórico, `ReportRecord`) · `crossref.py` (descubridor principal) · `download.py` (descarga segura) · `catalog.py` (snapshots, registro de adquisiciones, importación) · `importer.py` (identificación de PDF locales) · `isolation.py` (procesos aislados para PDF no confiables) · `layout.py` y `tables.py` (bloques y cuadros con pdfminer) · `processing.py`, `chunking.py`, `processed_store.py` (unidades, fragmentos, caché) · `retrieval.py`, `corpus.py`, `lexical.py`, `index_store.py` (fragmentos verificados, FTS5, manifiesto y activación atómica de índices) · `embeddings.py`, `vector.py`, `fusion.py` (Ollama, FAISS, RRF) · `generation.py`, `answering.py` (Qwen y respuestas verificadas) · `comparison.py` (comparaciones deterministas) · `service.py` (orquestación compartida) y `api.py` (FastAPI local) · `evaluation.py` (métricas con `evaluacion/`) · `diagnostics.py` · `cli.py`. Decisiones en `docs/decisiones/`.
 
 ## Reglas de fuentes y seguridad
 - Descubrir con Crossref (`api.crossref.org`, prefijo `10.32468`). **No** usar la API DSpace (`/server`, prohibida por `robots.txt`) para descubrir. **Nunca** eludir Radware/antibot (sin cookies de reto, navegadores simulados, proxies ni reintentos agresivos); un reto = `*BlockedError` y fallo cerrado.

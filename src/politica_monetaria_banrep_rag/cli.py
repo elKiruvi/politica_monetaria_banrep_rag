@@ -1,21 +1,19 @@
 """Punto de entrada de los comandos del proyecto."""
 
 import argparse
+import ipaddress
 import json
 import os
-import sqlite3
 import sys
 from contextlib import ExitStack
-from dataclasses import asdict, replace
+from dataclasses import asdict
 from pathlib import Path
 
 from politica_monetaria_banrep_rag import diagnostics
-from politica_monetaria_banrep_rag.answering import Answer, answer_question, detect_reports
+from politica_monetaria_banrep_rag.answering import Answer
 from politica_monetaria_banrep_rag.catalog import Catalog, CatalogError
 from politica_monetaria_banrep_rag.comparison import (
     Comparison,
-    compare,
-    detect_periods,
 )
 from politica_monetaria_banrep_rag.corpus import CorpusError, load_corpus
 from politica_monetaria_banrep_rag.crossref import CrossrefReportSource
@@ -25,12 +23,10 @@ from politica_monetaria_banrep_rag.embeddings import (
     DEFAULT_OLLAMA_URL,
     EmbeddingError,
     OllamaEmbeddings,
-    is_local_url,
 )
 from politica_monetaria_banrep_rag.evaluation import evaluate, load_queries, unresolved
 from politica_monetaria_banrep_rag.generation import (
     DEFAULT_GENERATION_MODEL,
-    GenerationError,
     OllamaGenerator,
 )
 from politica_monetaria_banrep_rag.importer import ImportFileError
@@ -48,12 +44,15 @@ from politica_monetaria_banrep_rag.retrieval import (
     RetrievalHit,
     SearchFilters,
 )
+from politica_monetaria_banrep_rag.service import (
+    DISCLAIMER,
+    SEARCH_MODES,
+    RagService,
+    ServiceError,
+)
 from politica_monetaria_banrep_rag.source import BanrepSource, ReportSource, SourceError
 
 SOURCES = ("crossref", "historico")
-DISCLAIMER = (
-    "Proyecto no oficial: no representa al Banco de la República ni es asesoría financiera."
-)
 
 
 def _make_source(name: str) -> ReportSource:
@@ -312,18 +311,9 @@ def _index_status(root: Path, active: ActiveIndex) -> dict[str, object]:
     return corpus_status(active.manifest, current[0] if current else None, verification)
 
 
-SEARCH_MODES = ("auto", "lexico", "semantico", "hibrido")
-
-
 def _ollama(model: str) -> OllamaEmbeddings:
-    url = os.getenv("BANREP_OLLAMA_URL") or DEFAULT_OLLAMA_URL
-    if not is_local_url(url):
-        print(
-            f"Aviso: Ollama no es local ({url}); los fragmentos y las consultas saldrán "
-            "del equipo.",
-            file=sys.stderr,
-        )
-    return OllamaEmbeddings(model, base_url=url)
+    """Proveedor de embeddings; el aviso de privacidad lo emite quien lo usa, una sola vez."""
+    return OllamaEmbeddings(model, base_url=os.getenv("BANREP_OLLAMA_URL") or DEFAULT_OLLAMA_URL)
 
 
 def _resolve_mode(active: ActiveIndex, mode: str) -> str:
@@ -346,25 +336,6 @@ def _embedder_for(active: ActiveIndex, mode: str) -> OllamaEmbeddings | None:
     if embedding["provider"] != "ollama":
         raise IndexStoreError(f"Proveedor de embeddings no soportado: {embedding['provider']}.")
     return _ollama(str(embedding["model"]))
-
-
-def _retrieve(
-    active: ActiveIndex, query: str, filters: SearchFilters, top_k: int, requested: str
-) -> tuple[list[RetrievalHit], str]:
-    """Recupera con el modo pedido; «auto» degrada a la vía léxica si Ollama falla."""
-    mode = _resolve_mode(active, requested)
-    embedder = None
-    try:
-        embedder = _embedder_for(active, mode)
-        return active.search(query, filters, top_k=top_k, mode=mode, embedder=embedder), mode
-    except (IndexStoreError, EmbeddingError) as exc:
-        if requested != "auto" or mode == "lexico":
-            raise
-        print(f"Aviso: vía semántica no disponible ({exc}); se usa la léxica.", file=sys.stderr)
-        return active.search(query, filters, top_k=top_k, mode="lexico"), "lexico"
-    finally:
-        if embedder is not None:
-            embedder.close()
 
 
 def _index(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
@@ -390,6 +361,8 @@ def _index(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                 or DEFAULT_EMBEDDING_MODEL
             )
             embedder = None if args.sin_embeddings else _ollama(model)
+            if embedder is not None:
+                _print_warnings(RagService(root).privacy_warnings())
             result = manager.build(
                 lambda: load_corpus(catalog, store),
                 snapshot,
@@ -523,49 +496,57 @@ def _print_hit(hit: RetrievalHit, notes: list[str]) -> None:
     print(f"   Fuente: {report.source_url or '(sin URL verificada en Crossref)'}")
 
 
+def _service(args: argparse.Namespace) -> RagService:
+    """Servicio con los proveedores de este módulo (se resuelven al usarse; útil en pruebas)."""
+    url = os.getenv("BANREP_OLLAMA_URL") or DEFAULT_OLLAMA_URL
+    return RagService(
+        _data_dir(args),
+        embedder_factory=lambda model: _ollama(model),
+        generator_factory=lambda model: OllamaGenerator(model, base_url=url),
+        generation_model=getattr(args, "modelo", None),
+    )
+
+
+_EXIT_CODES = {"invalid": 2, "not_found": 2, "unavailable": 1}
+
+
+def _fail(parser: argparse.ArgumentParser, prefix: str, exc: ServiceError) -> None:
+    _print_warnings(exc.warnings)  # p. ej., el aviso de privacidad, aunque la operación falle
+    parser.exit(_EXIT_CODES.get(exc.kind, 1), f"{prefix}: {exc}\n")
+
+
+def _print_warnings(warnings: list[str]) -> None:
+    for warning in warnings:
+        print(f"Aviso: {warning}", file=sys.stderr)
+
+
 def _search(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
-    root = _data_dir(args)
     try:
         filters = _filters(args)
     except ValueError as exc:
         parser.exit(2, f"Error: {exc}\n")
     try:
-        active = IndexManager(root).open_active()
-    except IndexStoreError as exc:
-        parser.exit(1, f"Error de búsqueda: {exc}\n")
-    try:
-        hits, mode = _retrieve(active, args.consulta, filters, args.top_k, args.modo)
-        notes = {
-            hit.chunk.chunk_id: [note.text for note in active.table_notes(hit.chunk)]
-            for hit in hits
-        }
-        status = _index_status(root, active)
-    except ValueError as exc:
-        parser.exit(2, f"Error: {exc}\n")
-    except (IndexStoreError, EmbeddingError) as exc:
-        parser.exit(
-            1, f"Error de búsqueda: {exc}\nLa vía léxica no necesita Ollama: «--modo lexico».\n"
-        )
-    except CatalogError as exc:
-        parser.exit(1, f"Error de búsqueda: {exc}\n")
-    finally:
-        active.close()
+        result = _service(args).search(args.consulta, filters, top_k=args.top_k, mode=args.modo)
+    except ServiceError as exc:
+        _fail(parser, "Error de búsqueda", exc)
+    _print_warnings(result.warnings)
     if args.json:
-        rows = [{**hit.to_dict(), "table_notes": notes[hit.chunk.chunk_id]} for hit in hits]
-        payload = {"index_id": active.index_id, "mode": mode, "query": args.consulta,
-                   "results": rows, "corpus": status}  # fmt: skip
+        rows = [{**hit.to_dict(), "table_notes": result.notes[hit.chunk.chunk_id]}
+                for hit in result.hits]  # fmt: skip
+        payload = {"index_id": result.index_id, "mode": result.mode, "query": args.consulta,
+                   "results": rows, "corpus": result.corpus}  # fmt: skip
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return
-    warnings = status["warnings"]
+    warnings = result.corpus.get("warnings", [])
     assert isinstance(warnings, list)
     for warning in warnings:
         print(f"Aviso: {warning}")
-    print(f"Modo: {mode}.")
-    if not hits:
+    print(f"Modo: {result.mode}.")
+    if not result.hits:
         print("Sin resultados en el índice activo para esa consulta y esos filtros.")
         return
-    for hit in hits:
-        _print_hit(hit, notes[hit.chunk.chunk_id])
+    for hit in result.hits:
+        _print_hit(hit, result.notes[hit.chunk.chunk_id])
 
 
 def _filters(args: argparse.Namespace) -> SearchFilters:
@@ -612,86 +593,38 @@ def _print_answer(answer: Answer) -> None:
 
 
 def _query(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
-    root = _data_dir(args)
     try:
         filters = _filters(args)
     except ValueError as exc:
         parser.exit(2, f"Error: {exc}\n")
     try:
-        active = IndexManager(root).open_active()
-    except IndexStoreError as exc:
-        parser.exit(1, f"Error de consulta: {exc}\n")
-    model = args.modelo or os.getenv("BANREP_GENERATION_MODEL") or DEFAULT_GENERATION_MODEL
-    generator = None
-    try:
-        detected: tuple[str, ...] = ()
-        if not (filters.report_ids or filters.period_from or filters.period_to):
-            periods = {r.reference_period: r.report_id for r in active.lexical.reports.values()}
-            detected, absent = detect_reports(args.pregunta, periods)
-            if absent:
-                print(
-                    f"Aviso: informes nombrados que no están indexados: {', '.join(absent)}.",
-                    file=sys.stderr,
-                )
-            if detected:
-                filters = replace(filters, report_ids=detected)
-                print(
-                    f"Informes mencionados en la pregunta: {', '.join(detected)}.",
-                    file=sys.stderr if args.json else sys.stdout,
-                )
-        hits, mode = _retrieve(active, args.pregunta, filters, args.top_k, args.modo)
-        embedding = active.embedding if mode != "lexico" else None
-        url = os.getenv("BANREP_OLLAMA_URL") or DEFAULT_OLLAMA_URL
-        if not is_local_url(url):
-            print(
-                f"Aviso: Ollama no es local ({url}); la pregunta y la evidencia saldrán "
-                "del equipo.",
-                file=sys.stderr,
-            )
-        generator = OllamaGenerator(model, base_url=url)
-        answer = answer_question(
-            args.pregunta,
-            hits,
-            active.table_notes,
-            generator,
-            embedding_model=str(embedding["model"]) if embedding else None,
+        result = _service(args).ask(args.pregunta, filters, top_k=args.top_k, mode=args.modo)
+    except ServiceError as exc:
+        _fail(parser, "Error de consulta", exc)
+    _print_warnings(result.warnings)
+    if result.detected_reports:
+        print(
+            f"Informes mencionados en la pregunta: {', '.join(result.detected_reports)}.",
+            file=sys.stderr if args.json else sys.stdout,
         )
-        status = _index_status(root, active)
-    except ValueError as exc:
-        parser.exit(2, f"Error: {exc}\n")
-    except GenerationError as exc:
-        parser.exit(
-            1,
-            f"Error de generación: {exc}\nPuede consultar la evidencia con «banrep-rag buscar».\n",
-        )
-    except (IndexStoreError, EmbeddingError) as exc:
-        parser.exit(
-            1, f"Error de consulta: {exc}\nLa vía léxica no necesita Ollama: «--modo lexico».\n"
-        )
-    except CatalogError as exc:
-        parser.exit(1, f"Error de consulta: {exc}\n")
-    finally:
-        active.close()
-        if generator is not None:
-            generator.close()
     if args.json:
         payload = {
-            "index_id": active.index_id,
-            "retrieval_mode": mode,
-            "generation_model": model,
+            "index_id": result.index_id,
+            "retrieval_mode": result.mode,
+            "generation_model": result.model,
             "question": args.pregunta,
-            "detected_reports": list(detected),
-            **asdict(answer),
+            "detected_reports": list(result.detected_reports),
+            **asdict(result.answer),
             "disclaimer": DISCLAIMER,
-            "corpus": status,
+            "corpus": result.corpus,
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return
-    warnings = status["warnings"]
+    warnings = result.corpus.get("warnings", [])
     assert isinstance(warnings, list)
     for warning in warnings:
         print(f"Aviso: {warning}")
-    _print_answer(answer)
+    _print_answer(result.answer)
 
 
 _DIFFERENCE_KINDS = {
@@ -758,139 +691,86 @@ def _print_comparison(comparison: Comparison, notes: dict[str, str]) -> None:
 
 
 def _compare(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
-    root = _data_dir(args)
     try:
-        active = IndexManager(root).open_active()
-    except IndexStoreError as exc:
-        parser.exit(1, f"Error de comparación: {exc}\n")
-    try:
-        reports = active.lexical.reports
-        periods = {r.reference_period: r.report_id for r in reports.values()}
-        missing: tuple[str, ...] = ()
-        if args.informe:
-            ids = tuple(dict.fromkeys(periods.get(item, item) for item in args.informe))
-        else:
-            ids, missing = detect_periods(args.pregunta or "", periods)
-        indicator = args.indicador or args.pregunta or ""
-        absent = f" No están indexados: {', '.join(missing)}." if missing else ""
-        if len(ids) < 2:
-            parser.exit(
-                2,
-                "Error: indique al menos dos informes indexados (por ejemplo «--informe 2025-01 "
-                f"--informe 2025-07») o nómbrelos en la pregunta.{absent}\n",
-            )
-        if missing:
-            print(f"Aviso: informes mencionados que no están indexados: {', '.join(missing)}.")
-        comparison = compare(
-            active.lexical.all_chunks(),
-            reports,
-            ids,
-            indicator,
+        result = _service(args).compare(
+            question=args.pregunta,
+            reports=tuple(args.informe or ()),
+            indicator=args.indicador,
             horizon=args.horizonte,
             table=args.cuadro,
-            only_projections=not args.incluir_observados,
-            explicit_indicator=bool(args.indicador),
+            include_observed=args.incluir_observados,
         )
-        chunks = {c.chunk_id: c for c in active.lexical.all_chunks() if c.kind == "table"}
-        notes: dict[str, str] = {}
-        for row in comparison.rows:
-            for value in row.values:
-                if value is not None and value.table_id and value.table_id not in notes:
-                    table_notes = active.table_notes(chunks[value.chunk_id])
-                    if table_notes:
-                        notes[value.table_id] = " ".join(n.text for n in table_notes)
-        status = _index_status(root, active)
-    except ValueError as exc:
-        parser.exit(2, f"Error: {exc}\n")
-    except (CatalogError, IndexStoreError, sqlite3.Error) as exc:
-        parser.exit(1, f"Error de comparación: {exc}\n")
-    finally:
-        active.close()
+    except ServiceError as exc:
+        _fail(parser, "Error", exc)
     if args.json:
         payload = {
-            "index_id": active.index_id,
-            "missing_reports": list(missing),
-            **asdict(comparison),
-            "table_notes": notes,
-            "corpus": status,
+            "index_id": result.index_id,
+            "missing_reports": list(result.missing_reports),
+            **asdict(result.comparison),
+            "table_notes": result.table_notes,
+            "corpus": result.corpus,
             "disclaimer": DISCLAIMER,
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
         return
-    warnings = status["warnings"]
-    assert isinstance(warnings, list)
-    for warning in warnings:
+    corpus_warnings = result.corpus.get("warnings", [])
+    assert isinstance(corpus_warnings, list)
+    for warning in [*result.warnings, *corpus_warnings]:
         print(f"Aviso: {warning}")
-    _print_comparison(comparison, notes)
+    _print_comparison(result.comparison, result.table_notes)
 
 
 def _summarize(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Resumen trazable de un informe (o de un tema en él) con el flujo verificado de consultar."""
-    root = _data_dir(args)
     try:
-        active = IndexManager(root).open_active()
-    except IndexStoreError as exc:
-        parser.exit(1, f"Error de resumen: {exc}\n")
-    model = args.modelo or os.getenv("BANREP_GENERATION_MODEL") or DEFAULT_GENERATION_MODEL
-    generator = None
-    try:
-        periods = {r.reference_period: r.report_id for r in active.lexical.reports.values()}
-        report_id = periods.get(args.informe, args.informe)
-        if report_id not in active.lexical.reports:
-            parser.exit(2, f"Error: el informe {args.informe} no está indexado.\n")
-        report = active.lexical.reports[report_id]
-        topic = (
-            args.tema or "mensajes principales sobre inflación, crecimiento y política monetaria"
+        result = _service(args).summarize(
+            args.informe, topic=args.tema, top_k=args.top_k, mode=args.modo
         )
-        question = (
-            f"Resume lo que dice el Informe de Política Monetaria de {report.reference_period} "
-            f"sobre: {topic}."
-        )
-        filters = SearchFilters(report_ids=(report_id,), section=None if args.tema else "Resumen")
-        hits, mode = _retrieve(active, topic, filters, args.top_k, args.modo)
-        embedding = active.embedding if mode != "lexico" else None
-        generator = OllamaGenerator(
-            model, base_url=os.getenv("BANREP_OLLAMA_URL") or DEFAULT_OLLAMA_URL
-        )
-        answer = answer_question(
-            question,
-            hits,
-            active.table_notes,
-            generator,
-            embedding_model=str(embedding["model"]) if embedding else None,
-            scope="all",
-        )
-        status = _index_status(root, active)
-    except ValueError as exc:
-        parser.exit(2, f"Error: {exc}\n")
-    except GenerationError as exc:
-        parser.exit(1, f"Error de generación: {exc}\n")
-    except (IndexStoreError, EmbeddingError) as exc:
-        parser.exit(
-            1, f"Error de resumen: {exc}\nLa vía léxica no necesita Ollama: «--modo lexico».\n"
-        )
-    except CatalogError as exc:
-        parser.exit(1, f"Error de resumen: {exc}\n")
-    finally:
-        active.close()
-        if generator is not None:
-            generator.close()
+    except ServiceError as exc:
+        _fail(parser, "Error de resumen", exc)
+    _print_warnings(result.warnings)
     if args.json:
-        payload = {"index_id": active.index_id, "report_id": report_id, "topic": args.tema,
-                   "generation_model": model, **asdict(answer), "corpus": status,
+        payload = {"index_id": result.index_id, "report_id": result.report.report_id,
+                   "topic": args.tema, "generation_model": result.model,
+                   **asdict(result.answer), "corpus": result.corpus,
                    "disclaimer": DISCLAIMER}  # fmt: skip
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return
-    warnings = status["warnings"]
+    warnings = result.corpus.get("warnings", [])
     assert isinstance(warnings, list)
     for warning in warnings:
         print(f"Aviso: {warning}")
-    print(f"Resumen de {report.title} ({report.reference_period}) — {topic}")
+    print(f"Resumen de {result.report.title} ({result.report.reference_period}) — {result.topic}")
     print(
         "Cada cifra se verificó contra la evidencia de este informe; si el modelo no citó su "
         "fuente, se agrega."
     )
-    _print_answer(answer)
+    _print_answer(result.answer)
+
+
+def _is_local_host(host: str) -> bool:
+    try:
+        return host == "localhost" or ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
+def _serve(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """API y web locales; exponerlas a la red exige una decisión explícita."""
+    if not _is_local_host(args.host) and not args.permitir_red:
+        parser.exit(
+            2,
+            f"Error: {args.host} no es una dirección local. La aplicación no tiene "
+            "autenticación; use «--permitir-red» solo detrás de controles propios (ADR 0011).\n",
+        )
+    import uvicorn
+
+    from politica_monetaria_banrep_rag.api import LOCAL_HOSTS, create_app
+
+    hosts = ["*"] if args.permitir_red else [*LOCAL_HOSTS, args.host]
+    app = create_app(_service(args), allowed_hosts=hosts)
+    print(f"Sirviendo en http://{args.host}:{args.port} (Ctrl+C para detener). {DISCLAIMER}")
+    uvicorn.run(app, host=args.host, port=args.port, log_level="warning")
 
 
 def _evaluate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
@@ -1131,6 +1011,18 @@ def main() -> None:
     )  # fmt: skip
     summary_cmd.add_argument("--modelo", help="Modelo de generación de Ollama")
     summary_cmd.add_argument("--json", action="store_true", help="Emite el resumen en JSON")
+    serve_cmd = subcommands.add_parser("servir", help="Inicia la API y la interfaz web locales")
+    serve_cmd.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
+    serve_cmd.add_argument("--host", default="127.0.0.1", help="Dirección (por defecto 127.0.0.1)")
+    serve_cmd.add_argument(
+        "--port", type=int, default=8000, choices=range(1024, 65536), metavar="PUERTO",
+        help="Puerto (1024 a 65535; por defecto 8000)",
+    )  # fmt: skip
+    serve_cmd.add_argument(
+        "--permitir-red", action="store_true",
+        help="Permite escuchar fuera de localhost (sin autenticación: bajo su responsabilidad)",
+    )  # fmt: skip
+    serve_cmd.add_argument("--modelo", help="Modelo de generación de Ollama")
     validate_cmd = subcommands.add_parser(
         "validar-indice", help="Comprueba la integridad del índice activo y su vigencia"
     )
@@ -1158,6 +1050,7 @@ def main() -> None:
         "consultar": _query,
         "comparar": _compare,
         "resumir": _summarize,
+        "servir": _serve,
     }.get(args.command)
     if handler is not None:
         handler(parser, args)

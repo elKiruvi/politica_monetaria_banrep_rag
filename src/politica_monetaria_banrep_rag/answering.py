@@ -20,6 +20,10 @@ from politica_monetaria_banrep_rag.retrieval import IndexedChunk, RetrievalHit
 ABSTENTION_SIMILARITY = {"embeddinggemma:latest": 0.45}
 MAX_QUESTION_CHARS = 500
 _MAX_NOTE_CHUNKS = 2
+# Presupuesto de evidencia para el contexto de 8 192 tokens de Qwen: unos 16 000 caracteres de
+# bloques (≈ 5 000 tokens) más instrucciones, pregunta y 600 de salida. Los bloques entran por
+# orden de relevancia y nunca se recortan a medias.
+MAX_EVIDENCE_CHARS = 16_000
 
 ANSWER_SCHEMA: dict[str, object] = {
     "type": "object",
@@ -347,8 +351,18 @@ def answer_question(
             evidence=evidence,
             reason=f"Similitud máxima {max(similarities):.3f} < {threshold} ({embedding_model}).",
         )
-    notes = {label: notes_for(hit.chunk)[:_MAX_NOTE_CHUNKS] for label, hit in labels.items()}
-    blocks = [render_evidence(label, hit, notes[label]) for label, hit in labels.items()]
+    notes: dict[str, list[IndexedChunk]] = {}
+    blocks: list[str] = []
+    used = 0
+    for label, hit in list(labels.items()):
+        block_notes = notes_for(hit.chunk)[:_MAX_NOTE_CHUNKS]
+        block = render_evidence(label, hit, block_notes)
+        if blocks and used + len(block) > MAX_EVIDENCE_CHARS:
+            del labels[label]  # fuera del presupuesto: no se envía ni puede citarse
+            continue
+        notes[label], used = block_notes, used + len(block)
+        blocks.append(block)
+    evidence = tuple(citation for citation in evidence if citation.label in labels)
     # Cifras admisibles: solo el contenido citable (texto, notas, título y periodo); nunca las
     # páginas ni otros metadatos del bloque, que el modelo no debe presentar como datos.
     # Las cifras de un cuadro sin estructura (o de ejes) no están atribuidas: no habilitan datos.
