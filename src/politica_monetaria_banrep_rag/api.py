@@ -8,11 +8,13 @@ llamadas al modelo de lenguaje y nunca devuelve trazas internas.
 import json
 import threading
 from dataclasses import asdict
+from pathlib import Path
 from typing import Annotated, Literal
 
 from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import Response
+from fastapi.responses import FileResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, ConfigDict, Field
 from starlette.exceptions import HTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
@@ -22,6 +24,7 @@ from politica_monetaria_banrep_rag.retrieval import SearchFilters
 from politica_monetaria_banrep_rag.service import DISCLAIMER, RagService, ServiceError
 
 API_VERSION = "v1"
+WEB_DIR = Path(__file__).parent / "web" / "static"
 MAX_BODY_BYTES = 16_384
 LOCAL_HOSTS = ["127.0.0.1", "localhost", "[::1]"]
 SECURITY_HEADERS = {
@@ -194,6 +197,12 @@ def create_app(service: RagService, *, allowed_hosts: list[str] | None = None) -
             generation_lock.release()
 
     prefix = f"/api/{API_VERSION}"
+    app.mount("/static", StaticFiles(directory=WEB_DIR), name="static")
+
+    @app.get("/", include_in_schema=False)
+    def index() -> Response:
+        """Interfaz web: HTML, CSS y JS locales (sin CDN); usa esta misma API."""
+        return FileResponse(WEB_DIR / "index.html", media_type="text/html; charset=utf-8")
 
     @app.get(f"{prefix}/health")
     def health() -> Response:

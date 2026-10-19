@@ -35,6 +35,14 @@
   - `/query` responde con citas (octubre de 2025, petróleo, págs. 13 y 19).
   - `/compare` da +0,65 pp; con `Host: evil.com`, 400.
 
+## Interfaz web (F7B)
+
+- Una página propia en `/` (`web/static/index.html`, `app.css` y `app.js`), servida por la misma app y sin dependencias: sin CDN, sin plantillas ni compilación. Usa solo las rutas de `/api/v1`, de modo que la web, la CLI y la API comparten la lógica.
+- Pestañas: «Preguntar» (con sugerencias y filtros de periodo), «Comparar», «Resumir» y «Buscar evidencia». Una sección de estado muestra el índice, si el corpus es de importación local, la disponibilidad de Ollama y del modelo, los avisos y la tabla de informes con su vigencia.
+- **Seguridad:** compatible con la CSP (`script-src 'self'`, sin scripts ni estilos en línea ni manejadores `on…`). Todo texto de los informes o del modelo se inserta con `textContent`; nunca se usa `innerHTML`. Los enlaces a fuentes solo admiten `http(s)`. `StaticFiles` impide salir del directorio.
+- **Accesibilidad:** HTML semántico, `lang="es"`, etiquetas en todos los campos, pestañas con roles ARIA, regiones `aria-live`, enlace para saltar al contenido, foco visible y tema claro u oscuro según el sistema.
+- **Verificación:** las pruebas comprueban las rutas, los recursos sin CDN, la ausencia de HTML inyectable, que las rutas de la API que usa el JS existen y la sintaxis del JS (`node --check`). Con el servidor real, todas las llamadas de la página responden. **La revisión visual en un navegador queda pendiente** (ver el estado del desarrollo).
+
 ## Revisión independiente
 
 No encontró hallazgos altos. Halló 4 medios, todos corregidos:

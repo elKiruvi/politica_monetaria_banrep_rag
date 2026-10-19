@@ -155,13 +155,12 @@ class RagService:
 
     def _redact(self, message: str) -> str:
         """Los mensajes al usuario no exponen rutas locales del equipo."""
-        for path, label in (
-            (str(self.root.resolve()), "<datos>"),
-            (str(self.root), "<datos>"),
-            (str(Path.home()), "~"),
-        ):
-            if path not in {"", "."}:
-                message = message.replace(path, label)
+        # Solo rutas absolutas (la más larga primero): un nombre relativo corto como «data»
+        # no debe sustituirse dentro de otras palabras.
+        candidates = {str(self.root.resolve()): "<datos>", str(Path.home()): "~"}
+        for path in sorted(candidates, key=len, reverse=True):
+            if Path(path).is_absolute() and len(path) > 1:
+                message = message.replace(path, candidates[path])
         return message
 
     @contextmanager
