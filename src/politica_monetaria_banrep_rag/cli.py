@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import sqlite3
 import sys
 from contextlib import ExitStack
 from dataclasses import asdict, replace
@@ -587,6 +588,11 @@ def _print_answer(answer: Answer) -> None:
     print(f"{labels[answer.status]}:\n{answer.text}")
     if answer.reason:
         print(f"Motivo: {answer.reason}")
+    if answer.added_citations:
+        print(
+            "Fuentes añadidas por la verificación (respaldan cifras que el modelo no citó): "
+            + ", ".join(answer.added_citations)
+        )
     shown = answer.citations or (answer.evidence if answer.status != "answered" else ())
     if shown:
         print("\nFuentes citadas:" if answer.citations else "\nEvidencia revisada:")
@@ -783,6 +789,7 @@ def _compare(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             horizon=args.horizonte,
             table=args.cuadro,
             only_projections=not args.incluir_observados,
+            explicit_indicator=bool(args.indicador),
         )
         chunks = {c.chunk_id: c for c in active.lexical.all_chunks() if c.kind == "table"}
         notes: dict[str, str] = {}
@@ -795,7 +802,7 @@ def _compare(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         status = _index_status(root, active)
     except ValueError as exc:
         parser.exit(2, f"Error: {exc}\n")
-    except CatalogError as exc:
+    except (CatalogError, IndexStoreError, sqlite3.Error) as exc:
         parser.exit(1, f"Error de comparación: {exc}\n")
     finally:
         active.close()
@@ -879,7 +886,10 @@ def _summarize(parser: argparse.ArgumentParser, args: argparse.Namespace) -> Non
     for warning in warnings:
         print(f"Aviso: {warning}")
     print(f"Resumen de {report.title} ({report.reference_period}) — {topic}")
-    print("Las cifras se verificaron contra toda la evidencia revisada de este informe.")
+    print(
+        "Cada cifra se verificó contra la evidencia de este informe; si el modelo no citó su "
+        "fuente, se agrega."
+    )
     _print_answer(answer)
 
 
@@ -1105,7 +1115,7 @@ def main() -> None:
     compare_cmd.add_argument("--cuadro", help="Texto del título del cuadro, p. ej. «Anexo 2»")
     compare_cmd.add_argument(
         "--incluir-observados", action="store_true",
-        help="Incluye filas sin proyecciones (historia observada)",
+        help="Incluye filas sin cifras marcadas como proyección (negrilla o «proy»)",
     )  # fmt: skip
     compare_cmd.add_argument("--json", action="store_true", help="Emite la comparación en JSON")
     summary_cmd = subcommands.add_parser(

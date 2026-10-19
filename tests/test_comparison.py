@@ -165,6 +165,49 @@ def test_interpretation_picks_the_most_specific_matching_terms():
     ]
 
 
+def test_proy_column_header_counts_as_projection_and_hidden_rows_are_reported():
+    partner = ("Principales socios", "Estados Unidos")
+    chunks = [
+        table("2025-01", "Cuadro 2.1 Proyecciones de crecimiento",
+              [cell("2,2", "2025 (proy)", row=partner, unit=None, projection=False),
+               cell("2,8", "2023 (pr)", row=partner, unit=None, projection=False)]),
+        table("2025-07", "Cuadro 2.1 Proyecciones de crecimiento",
+              [cell("1,5", "2025 (proy)", row=partner, unit=None, projection=False),
+               cell("2,9", "2023 (pr)", row=partner, unit=None, projection=False)]),
+    ]  # fmt: skip
+    result = compare(chunks, REPORTS, ("ipm-2025-01", "ipm-2025-07"), "Estados Unidos",
+                     explicit_indicator=True)  # fmt: skip
+    (row,) = result.rows
+    assert row.horizon == "2025 (proy)" and row.differences[0].kind == "revision_de_proyeccion"
+    assert row.differences[0].value == Decimal("-0.7")
+    assert "Se omitieron 1 fila" in result.warnings[0]
+
+
+def test_ambiguous_rows_with_same_path_are_not_compared():
+    share = ("Balanza de pagos", "Porcentaje del PIB", "Porcentaje, términos nominales")
+    chunks = [
+        table("2025-07", ANNEX, [cell("-1,7", "2025", row=share), cell("-1,4", "2025", row=share)]),
+        table("2026-01", ANNEX, [cell("-1,6", "2025", row=share), cell("-1,3", "2025", row=share)]),
+    ]
+    (row,) = compare(chunks, REPORTS, ("ipm-2025-07", "ipm-2026-01"), "porcentaje del pib",
+                     explicit_indicator=True).rows  # fmt: skip
+    assert not row.comparable and row.differences == ()
+    assert "ambigua" in row.notes[0]
+
+
+def test_explicit_indicator_keeps_all_words_and_questions_drop_function_words():
+    assert indicator_terms("tasa de cambio", from_question=False) == [("tasa",), ("cambio",)]
+    assert indicator_terms("¿Cómo cambió la inflación desde enero hasta julio de 2025?") == [
+        ("ipc total", "ipc", "inflacion")
+    ]
+    result = compare(CHUNKS, REPORTS, ("ipm-2025-01", "ipm-2025-07"), "producción de cacao",
+                     explicit_indicator=True)  # fmt: skip
+    assert result.rows == () and "Ninguna fila coincide" in result.warnings[0]
+    assert result.interpretation == ("produccion", "cacao")
+    with pytest.raises(ValueError, match="500"):
+        compare(CHUNKS, REPORTS, ("ipm-2025-01", "ipm-2025-07"), "inflación " * 60)
+
+
 def test_input_validation():
     with pytest.raises(ValueError, match="dos informes"):
         compare(CHUNKS, REPORTS, ("ipm-2025-01",), "IPC")
@@ -185,6 +228,8 @@ def test_input_validation():
             (),
         ),  # fmt: skip
         ("inflación de diciembre de 2025", (), ()),
+        ("enero 2025 y julio 2025", ("ipm-2025-01", "ipm-2025-07"), ()),
+        ("2025-01 frente a 2026-01", ("ipm-2025-01", "ipm-2026-01"), ()),
         ("julio", (), ()),
     ],
 )

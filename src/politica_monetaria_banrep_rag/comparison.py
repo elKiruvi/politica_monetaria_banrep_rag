@@ -23,7 +23,12 @@ _CAPTION_NOISE = re.compile(
     r"\((?:años|continuación|parte \d+ de \d+)\)|\bcontinuación\b", re.IGNORECASE
 )
 _VALUE = re.compile(r"^([-−–]?)(\d{1,3}(?:\.\d{3})+|\d+)(?:,(\d+))?(?:\s*(?:[a-z]/)+)?$")
-_PERIOD_MENTION = re.compile(r"\b(enero|abril|julio|octubre)(?:\s+(?:de|del)\s+(\d{4}))?\b", re.I)
+_PERIOD_MENTION = re.compile(
+    r"\b(enero|abril|julio|octubre)(?:\s+(?:(?:de|del)\s+)?(\d{4}))?\b", re.IGNORECASE
+)
+_ISO_PERIOD = re.compile(r"\b(\d{4})-(01|04|07|10)\b")
+MAX_INDICATOR_CHARS = 500
+_MAX_TERMS = 6
 # Opciones por término, de la más específica a la más general; se usa la primera combinación
 # que coincide con alguna fila de los cuadros elegidos.
 _SYNONYMS = {
@@ -35,10 +40,13 @@ _SYNONYMS = {
     "petroleo": ("petroleo", "brent"),
     "desempleo": ("tasa de desempleo", "desempleo"),
 }
+# Palabras de la pregunta que no describen el indicador (no se aplican a --indicador).
 _IGNORED = frozenset(
-    """a al como comparar compara comparacion cambiaron cambio cambios cual cuales de del
-    diferencia diferencias el en entre informe informes ipm la las lo los para por proyeccion
-    proyecciones que se segun sobre su sus un una y o evolucion""".split()
+    """a al como cómo comparar compara comparacion cambiaron cambio cambios cambió cual cuales
+    de del desde hasta frente versus vs con contra diferencia diferencias el en entre informe
+    informes ipm la las lo los para por pronostico pronosticos proyeccion proyecciones proyectado
+    proyectada que se segun sobre su sus un una y o evolucion evoluciono paso ocurrio vario
+    variacion banco republica""".split()
 )
 
 
@@ -135,35 +143,46 @@ class Comparison:
 def detect_periods(
     question: str, available: dict[str, str]
 ) -> tuple[tuple[str, ...], tuple[str, ...]]:
-    """Informes nombrados por mes de publicación y año: «entre enero y julio de 2025» → dos.
-
-    Un mes sin año toma el siguiente año explícito. Devuelve (``report_id`` indexados,
-    periodos AAAA-MM mencionados que no están en el índice)."""
-    mentions = [(m.group(1).lower(), m.group(2)) for m in _PERIOD_MENTION.finditer(question)]
+    """Informes nombrados por mes de publicación y año («entre enero y julio de 2025», «enero
+    2025», «2025-01»). Un mes sin año toma el siguiente año explícito. Devuelve (``report_id``
+    indexados, periodos AAAA-MM mencionados que no están en el índice)."""
+    mentions = [
+        (m.start(), _MONTHS[m.group(1).lower()], m.group(2))
+        for m in _PERIOD_MENTION.finditer(question)
+    ]
+    mentions += [(m.start(), m.group(2), m.group(1)) for m in _ISO_PERIOD.finditer(question)]
+    mentions.sort()
     found: list[str] = []
     missing: list[str] = []
-    for index, (month, year) in enumerate(mentions):
-        year = year or next((y for _, y in mentions[index + 1 :] if y), None)
+    for index, (_, month, year) in enumerate(mentions):
+        year = year or next((y for _, _, y in mentions[index + 1 :] if y), None)
         if not year:
             continue
-        period = f"{year}-{_MONTHS[month]}"
+        period = f"{year}-{month}"
         (found if period in available else missing).append(available.get(period, period))
     return tuple(dict.fromkeys(found)), tuple(dict.fromkeys(missing))
 
 
-def indicator_terms(text: str) -> list[tuple[str, ...]]:
-    """Términos del indicador con sinónimos del dominio; se ignoran palabras de la pregunta."""
-    words = re.findall(r"\w+", fold(_PERIOD_MENTION.sub(" ", text)))
-    return [
+def indicator_terms(text: str, *, from_question: bool = True) -> list[tuple[str, ...]]:
+    """Términos del indicador con sinónimos del dominio. Las palabras de función de una pregunta
+    se ignoran; un ``--indicador`` explícito se respeta completo."""
+    if len(text) > MAX_INDICATOR_CHARS:
+        raise ValueError(f"El indicador o la pregunta supera {MAX_INDICATOR_CHARS} caracteres.")
+    stripped = _ISO_PERIOD.sub(" ", _PERIOD_MENTION.sub(" ", text)) if from_question else text
+    words = re.findall(r"\w+", fold(stripped))
+    stop = {fold(word) for word in _IGNORED} if from_question else {"de", "del", "la", "el", "y"}
+    terms = [
         _SYNONYMS.get(word, (word,))
-        for word in words
-        if word not in _IGNORED and not word.isdigit() and len(word) > 1
+        for word in dict.fromkeys(words)
+        if word not in stop and not word.isdigit() and len(word) > 1
     ]
+    return terms[:_MAX_TERMS]
 
 
 def choose_terms(rows: Iterable[str], terms: list[tuple[str, ...]]) -> tuple[str, ...] | None:
     """Primera combinación de opciones (por especificidad) que coincide con alguna fila."""
     folded = [fold(row) for row in rows]
+    # Como mucho 6 términos de 3 opciones: 729 combinaciones.
     combos = sorted(product(*(range(len(options)) for options in terms)), key=sum)
     for combo in combos[:256]:
         chosen = tuple(options[i] for options, i in zip(terms, combo, strict=True))
@@ -175,7 +194,7 @@ def choose_terms(rows: Iterable[str], terms: list[tuple[str, ...]]) -> tuple[str
 def _difference_unit(unit: str | None) -> str:
     if unit is None:
         return "unidad no declarada en la celda"
-    if unit in {"porcentaje", "%"} or "porcentaje" in unit:
+    if unit == "%" or "porcentaje" in unit or "porcentual" in unit:
         return "puntos porcentuales"
     return unit
 
@@ -193,6 +212,7 @@ def compare(
     horizon: str | None = None,
     table: str | None = None,
     only_projections: bool = True,
+    explicit_indicator: bool = False,
 ) -> Comparison:
     """Compara un indicador entre informes; con ``only_projections`` (por defecto) omite las
     filas en las que ningún informe marca proyección, como la historia observada."""
@@ -201,7 +221,7 @@ def compare(
     missing = [report_id for report_id in report_ids if report_id not in reports]
     if missing:
         raise ValueError(f"Informes no indexados: {', '.join(missing)}.")
-    terms = indicator_terms(indicator)
+    terms = indicator_terms(indicator, from_question=not explicit_indicator)
     if not terms:
         raise ValueError("Indique el indicador a comparar (por ejemplo, «IPC total»).")
     ordered = tuple(sorted((reports[r] for r in report_ids), key=lambda r: r.reference_period))
@@ -225,6 +245,7 @@ def compare(
     chosen = choose_terms({row for _, _, row, _ in candidates}, terms) or ()
     grouped: dict[tuple[str, str, str], list[CellValue | None]] = {}
     labels: dict[tuple[str, str, str], tuple[str, str]] = {}
+    ambiguous: set[tuple[str, str, str]] = set()
     for chunk, caption, row_text, cell in candidates if chosen else ():
         if not all(option in fold(row_text) for option in chosen):
             continue
@@ -235,8 +256,13 @@ def compare(
         key = (fold(caption), fold(row_text), fold(cell.column))
         labels.setdefault(key, (caption, row_text))
         slot = grouped.setdefault(key, [None] * len(ordered))
-        if slot[position[chunk.report_id]] is not None:
-            continue  # la misma celda repetida en otro fragmento del mismo cuadro
+        previous = slot[position[chunk.report_id]]
+        if previous is not None:
+            # Misma clave en el mismo informe: repetición idéntica o filas distintas con la misma
+            # ruta (p. ej. un grupo padre perdido); en el segundo caso la fila es ambigua.
+            if previous.value != value:
+                ambiguous.add(key)
+            continue
         slot[position[chunk.report_id]] = CellValue(
             meta.report_id,
             meta.reference_period,
@@ -248,7 +274,8 @@ def compare(
             cell.unit,
             cell.value,
             value,
-            cell.projection_or_assumption,
+            # Negrilla según la nota del cuadro, o «(proy)» en el encabezado de la columna.
+            cell.projection_or_assumption or "proy" in fold(cell.column),
             chunk.page_start,
             chunk.page_end,
             chunk.page_labels,
@@ -256,17 +283,24 @@ def compare(
             chunk.table_id,
         )
     rows = []
+    hidden = 0
     for key, values in grouped.items():
         present = [v for v in values if v is not None]
         if len(present) < 2:
             continue  # sin contraparte en otro informe
         if only_projections and not any(v.projection for v in present):
+            hidden += 1
             continue
         caption, row_text = labels[key]
         units = {v.unit for v in present}
         notes = []
-        comparable = len(units) == 1
-        if not comparable:
+        comparable = len(units) == 1 and key not in ambiguous
+        if key in ambiguous:
+            notes.append(
+                "Fila ambigua: el mismo informe trae valores distintos para esta ruta del cuadro "
+                "(posible grupo no identificado); no se compara."
+            )
+        if len(units) > 1:
             notes.append(
                 f"Unidades distintas ({', '.join(sorted(map(str, units)))}): no se comparan."
             )
@@ -316,6 +350,17 @@ def compare(
         )
     rows.sort(key=lambda r: (r.table, r.indicator, r.horizon))
     warnings = []
+    if hidden:
+        warnings.append(
+            f"Se omitieron {hidden} fila(s) sin cifras marcadas como proyección (negrilla o "
+            "«proy»); use --incluir-observados para verlas."
+        )
+    if not chosen:
+        warnings.append(
+            "Ninguna fila coincide con los términos "
+            + " + ".join("/".join(options) for options in terms)
+            + "; precise el indicador con --indicador."
+        )
     if not rows:
         warnings.append(
             "No hay celdas atribuidas comparables para ese indicador en los informes elegidos. "
@@ -326,7 +371,7 @@ def compare(
         indicator,
         horizon,
         tuple(rows[:MAX_ROWS]),
-        interpretation=tuple(dict.fromkeys(chosen)),
+        interpretation=tuple(dict.fromkeys(chosen)) or tuple("/".join(o) for o in terms),
         truncated=len(rows) > MAX_ROWS,
         warnings=tuple(warnings),
     )
