@@ -1,6 +1,6 @@
-# Estado del desarrollo — checkpoint F7
+# Estado del desarrollo — checkpoint F8 + adquisición asistida
 
-**Actualizado:** 19 de octubre de 2026. H1–H5 fusionadas (#27–#31 cerrados). **F5 cerrada** (#6): PR #37 y #38, `main` `763b655`, CI post-merge aprobado (run 39202051557). **F6 cerrada** (#7): PR #39 y #40, `main` `33fb27f`, CI post-merge aprobado (run 39222532131). **F7 cerrada** (#8): PR #41, #42 y #43, `main` `0292438`, CI post-merge aprobado (run 39260908249). **F8 cerrada** (#9): PR #44 (`main` `6f6a214`, CI post-merge aprobado, run 39265452849) y PR #45 (Docker). **Siguiente fase:** F9 (#10).
+**Actualizado:** 19 de octubre de 2026. H1–H5 fusionadas (#27–#31 cerrados). **F5 cerrada** (#6): PR #37 y #38, `main` `763b655`, CI post-merge aprobado (run 39202051557). **F6 cerrada** (#7): PR #39 y #40, `main` `33fb27f`, CI post-merge aprobado (run 39222532131). **F7 cerrada** (#8): PR #41, #42 y #43, `main` `0292438`, CI post-merge aprobado (run 39260908249). **F8 cerrada** (#9): PR #44 (`main` `6f6a214`, CI post-merge aprobado, run 39265452849) y PR #45 (Docker, `main` `bc37162`, CI post-merge aprobado). **Adquisición asistida** (F3, ADR 0015): freno tras un bloqueo antibot, `faltantes`, `importar CARPETA` y `sincronizar --sin-descargar`. **Siguiente fase:** F9 (#10).
 
 ## Resumen por fase
 
@@ -9,7 +9,7 @@
 | F0 Auditoría | #1 | cerrada | ADR 0001 |
 | F1 Base | #2 | cerrada | CI `Pruebas y calidad`, `uv.lock`, pre-commit |
 | F2 Descubrimiento | #3 | **verificado con red real** (Crossref, N=12) | PR #20 |
-| F3 Descarga y sincronización | #4 | implementada; 1 PDF descargado en GitHub Actions; **N=12 real pendiente** (Radware desde Ubuntu) | PR #14–#19, #22; run 38936215976 |
+| F3 Descarga y sincronización | #4 | implementada; 1 PDF descargado en GitHub Actions; **N=12 real pendiente** (Radware desde Ubuntu); adquisición asistida con navegador e importación (ADR 0015) | PR #14–#19, #22; run 38936215976 |
 | Sprint de acceso | #18 | falta N=12 real y repetición | tabla del issue |
 | F4 Procesamiento | #5 | **completada**; H1–H5 fusionadas (PR #32–#36) | ADR 0006 |
 | F5 Indexación y recuperación | #6 | **cerrada**: FTS5, FAISS, RRF híbrida, manifiesto, reversión, evaluación | ADR 0007, 0008 |
@@ -39,6 +39,25 @@
 | Descarga de 1 PDF (julio 2026) | bloqueada | **verificada**: 49 págs., 5 114 903 bytes, SHA-256 `27bec154…40b717` |
 | Sincronización N=2 / N=12 real | bloqueada: reto Radware en `/server/.../content` desde la primera descarga | pendiente |
 
+## Estado de la descarga (19-10-2026)
+
+- **Diagnóstico** (`diagnostico-fuentes`, desde Ubuntu):
+  - Responden bien Crossref (200, último informe 2026-07), la portada del histórico y `robots.txt` (200).
+  - El DOI redirige a la ruta heredada, y esta a `/server/api/core/bitstreams/<uuid>/content` (302 en ambos casos).
+  - La paginación del histórico recibe un reto Radware. Minutos después, también lo recibieron la portada y la página del informe.
+  - `robots.txt` sigue con `Disallow: /server`.
+  - La descarga automática desde este equipo no es viable sin eludir controles, y no se eluden.
+- **Implementado** (ADR 0015):
+  - Un reto detiene todas las descargas de la ejecución y bloquea nuevas solicitudes durante 12 h.
+  - `banrep-rag faltantes` lista lo que falta con su enlace DOI.
+  - `importar ~/Descargas` importa los IPM de una carpeta y omite los demás PDF.
+  - `sincronizar --sin-descargar` activa la ventana de los últimos 12 sin pedir PDF.
+- **Ventana real** (`faltantes` sobre `data/catalogo`, consultando Crossref):
+  - Hay 5 de 12 importados: 2026-01, 2025-10, 2025-07, 2025-04 y 2025-01.
+  - **Faltan 7:** 2026-07, 2026-04, 2024-10, 2024-07, 2024-04, 2024-01 y 2023-10. La persona debe descargarlos con su navegador y luego ejecutar `importar` y `sincronizar --sin-descargar`.
+  - Los informes de 2023–2024 no se han validado en el procesamiento (F4); revisar `procesar` al importarlos.
+- **Pendiente:** huella SHA-256 oficial observada desde Actions (sin publicar el PDF) para contrastar los importados. Revisar antes la frecuencia y `robots.txt`.
+
 ## Datos locales del equipo de desarrollo (no versionados)
 
 - `data/catalogo/`: catálogo activo de **importación local** con 5 PDF (enero, abril, julio y octubre de 2025; enero de 2026), metadatos verificados en Crossref, `processed/` e `indexes/`. **No** es la ventana de los últimos 12.
@@ -51,7 +70,11 @@
 - **F8, verificado:**
   - El workflow «Detector de publicaciones» se ejecutó a mano en `main` (run 39265774418, `workflow_dispatch`): estado `sin_cambios` y ningún issue abierto. La referencia versionada tiene 12 informes, de 2026-07 a 2023-10.
   - El workflow «Docker» construye la imagen y la arranca con Compose: *healthy*, UID 10001, sin PDF ni datos, `/ready` 503 sin índice, `Host` ajeno 400 y escritura en un catálogo 0700 con el UID de su dueño.
-- **Docker en un equipo real:** no hay Docker en el equipo de desarrollo. Falta probar `docker compose up` con el catálogo real, Ollama del equipo (en Linux requiere que escuche en la IP del puente, ADR 0014) y el perfil `ollama-gpu`.
+- **Docker en un equipo real:**
+  - Ya está instalado Docker 29.9.1 *rootless* en Ubuntu 26.04 (sin demonio root ni grupo `docker`).
+  - `docker compose up` está verificado con una copia del catálogo real y `BANREP_UID=0`: *healthy*, `/ready` 200, búsqueda léxica, `Host` ajeno 400, puerto solo en loopback.
+  - Con `BANREP_UID=1000`, `/ready` da **500**. Mejorar el mensaje en F9: debería decir «no se puede leer el catálogo (permisos)».
+  - **Falta** probar el perfil `ollama` (descarga la imagen y los modelos, varios GB: requiere decisión de la persona) y `ollama-gpu` (en modo *rootless* requiere el NVIDIA Container Toolkit sin cgroups).
 - **Revisión visual de la web en un navegador:** sigue pendiente; en las sesiones de desarrollo no hubo herramienta de navegador. Abrir `http://127.0.0.1:8000` tras `banrep-rag servir`, probar cada pestaña con y sin Ollama, y descargar un reporte de cada formato.
 
 ### Fases siguientes

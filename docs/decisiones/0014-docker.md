@@ -27,6 +27,7 @@
   - `BANREP_OLLAMA_LOCAL_HOSTS` declara `host.docker.internal` y `ollama` como el mismo equipo, para no emitir avisos de privacidad falsos. Si se usa `http://ollama:11434` sin el perfil, el nombre podría resolverse fuera; por eso la lista se puede ajustar con `BANREP_DOCKER_OLLAMA_LOCAL_HOSTS`.
 - **Permisos del catálogo:**
   - El servicio corre con `BANREP_UID` y `BANREP_GID` (por defecto 10001). Un catálogo creado con `uv` pertenece a la persona y tiene modo `0700`, así que con el UID por defecto el contenedor no puede ni leerlo.
+  - Con Docker sin root (*rootless*), el UID 0 del contenedor corresponde al usuario del equipo y los demás a UID subordinados; hay que usar `BANREP_UID=0`/`BANREP_GID=0`. Verificado el 19-10-2026 en Ubuntu 26.04 con Docker 29.9.1 rootless y una copia del catálogo real: *healthy*, `CapEff` 0, `/ready` 200 con 1 566 fragmentos, búsqueda léxica correcta, `Host` ajeno 400, puerto solo en 127.0.0.1 y ningún archivo del catálogo modificado. Con `id -u` (1000), `/ready` devolvió 500 por `PermissionError`. El Ollama del equipo no es alcanzable desde el contenedor en ese modo.
   - Por eso la configuración va en un `.env` junto a `compose.yaml`, copiado de `.env.example` y ajustado con `id -u`/`id -g`. Ahí también se elige la carpeta (`BANREP_DATOS`, por defecto `./data/catalogo`), que **debe existir**: si falta, Docker la crea como root y el contenedor no puede escribir en ella.
 
 ## Uso

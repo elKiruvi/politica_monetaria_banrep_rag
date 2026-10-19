@@ -44,8 +44,26 @@ _REVALIDATION_ERRORS = {"blocked", "transient", "permanent"}
 _MAX_IMPORT_BYTES = 30_000_000
 
 
+def _iso(timestamp: float) -> str:
+    return datetime.fromtimestamp(timestamp, UTC).isoformat(timespec="seconds")
+
+
+def missing_message(missing: list[ReportRecord]) -> str:
+    """Explica qué informes faltan y cómo obtenerlos sin eludir los controles de la fuente."""
+    lines = [
+        f"Faltan {len(missing)} informe(s) de la ventana; ábralos en su navegador desde el enlace "
+        "oficial, guarde el PDF e impórtelo con «banrep-rag importar CARPETA_O_ARCHIVO»:"
+    ]
+    lines += [f"  {r.reference_period} — {r.title} — {r.source_url}" for r in missing]
+    return "\n".join(lines)
+
+
 class CatalogError(Exception):
     """La ventana o el estado local no permiten activar un snapshot."""
+
+
+class ImportRejectedError(CatalogError):
+    """Este archivo no se importa: no es un PDF válido, es grande o hay otro para el periodo."""
 
 
 _FINGERPRINT_EXCLUDE = ("metadata_deposited_at", "discovery_source")
@@ -194,6 +212,7 @@ class Catalog:
         download_pause: float = 10.0,
         wall_clock: Callable[[], float] = time.time,
         sleep: Callable[[float], None] = time.sleep,
+        block_cooldown_seconds: float = 12 * 3600,
     ):
         if not 0 < max_seconds < float("inf"):
             raise ValueError("El plazo total de sincronización debe ser positivo.")
@@ -201,6 +220,9 @@ class Catalog:
             raise ValueError("El plazo de revalidación debe ser un número finito no negativo.")
         if not 0 <= download_pause <= 600:
             raise ValueError("La pausa entre descargas debe estar entre 0 y 600 segundos.")
+        if not 0 <= block_cooldown_seconds < float("inf"):
+            raise ValueError("La espera tras un bloqueo debe ser un número finito no negativo.")
+        self.block_cooldown_seconds = block_cooldown_seconds
         self.root = root
         self.source = source
         self.downloader = downloader
@@ -237,7 +259,41 @@ class Catalog:
         except (OSError, ValueError, KeyError, TypeError, AttributeError) as exc:
             raise CatalogError("El catálogo activo está dañado; no se actualizará.") from exc
 
-    def sync(self, max_reports: int = 12, *, use_imports: bool = False) -> str:
+    def blocked_until(self, attempts: dict[str, dict[str, object]] | None = None) -> float | None:
+        """Fin de la espera tras el último bloqueo antibot registrado, si sigue vigente.
+
+        Después de un reto de Radware no se vuelve a solicitar un PDF hasta que pase la espera:
+        insistir no es respetuoso con la fuente y suele prolongar el bloqueo.
+        """
+        if not self.block_cooldown_seconds:
+            return None
+        attempts = self.revalidations() if attempts is None else attempts
+        blocked = [
+            datetime.fromisoformat(str(entry["last_attempt_at"])).timestamp()
+            for entry in attempts.values()
+            if entry["error_type"] == "blocked"
+        ]
+        if not blocked:
+            return None
+        until = max(blocked) + self.block_cooldown_seconds
+        return until if self.wall_clock() < until else None
+
+    def sync(
+        self,
+        max_reports: int = 12,
+        *,
+        use_imports: bool = False,
+        allow_downloads: bool = True,
+        ignore_cooldown: bool = False,
+    ) -> str:
+        """Activa la ventana de ``max_reports`` informes.
+
+        Con ``allow_downloads=False`` no se solicita ningún PDF: la ventana se compone con las
+        descargas verificadas y los PDF importados (``use_imports`` queda implícito). Tras un
+        bloqueo antibot no se intentan más descargas en la misma ejecución ni durante la espera.
+        Si falta algún informe, el error enumera todos los que faltan con su enlace oficial.
+        """
+        use_imports = use_imports or not allow_downloads
         if (
             not isinstance(max_reports, int)
             or isinstance(max_reports, bool)
@@ -260,6 +316,16 @@ class Catalog:
             revalidations = self.revalidations()
             self._save_revalidations(revalidations)  # Persiste el plazo incluso sin descargas.
             downloaded = False
+            downloads_on = allow_downloads
+            blocked: DownloadBlockedError | None = None
+            missing: list[ReportRecord] = []
+            until = None if ignore_cooldown or not allow_downloads else self.blocked_until()
+            if until is not None:
+                downloads_on = False
+                self.progress(
+                    "Banrep bloqueó una descarga reciente; no se solicitarán PDF hasta "
+                    f"{_iso(until)} (se usan las descargas verificadas y los PDF importados)."
+                )
             for position, report in enumerate(reports, start=1):
                 if self.clock() >= deadline:
                     raise CatalogError(
@@ -276,6 +342,24 @@ class Catalog:
                     assert previous is not None
                     self.progress(f"Sin cambios {label} (verificado el {previous['verified_at']}).")
                     pdf = previous
+                elif not downloads_on:
+                    # Sin solicitar nada a la fuente: PDF verificado antes, importado o faltante.
+                    imported = _latest_import(entries)
+                    if previous is not None:
+                        self.progress(
+                            f"Sin descarga {label}: se conserva el PDF verificado el "
+                            f"{previous['verified_at']} (verificación vencida)."
+                        )
+                        pdf = previous
+                    elif imported is not None:
+                        self.progress(f"Sin descarga {label}: se usa el PDF importado.")
+                        records.append(
+                            self._import_record(imported, metadata, metadata_verified=True)
+                        )
+                        continue
+                    else:
+                        missing.append(report)
+                        continue
                 else:
                     if downloaded and self.download_pause:
                         self.sleep(self.download_pause)  # Ritmo respetuoso con la fuente.
@@ -285,6 +369,13 @@ class Catalog:
                     try:
                         pdf = self._download(report, raw_dir, fingerprint)
                     except DownloadError as exc:
+                        if isinstance(exc, DownloadBlockedError):
+                            # Un reto antibot detiene las descargas de toda la ejecución.
+                            blocked, downloads_on = exc, False
+                            self.progress(
+                                "Banrep pidió una verificación antibot; no se solicitarán más "
+                                "PDF en esta ejecución."
+                            )
                         transient = isinstance(exc, DownloadBlockedError | DownloadTransientError)
                         last_verified = previous or next(
                             (entry for entry in reversed(entries) if not _is_import(entry)), None
@@ -313,6 +404,9 @@ class Catalog:
                             records.append(
                                 self._import_record(imported, metadata, metadata_verified=True)
                             )
+                            continue
+                        if previous is None and blocked is exc:
+                            missing.append(report)
                             continue
                         if previous is None or not transient:
                             raise
@@ -348,6 +442,12 @@ class Catalog:
                         },
                     }
                 )
+            if missing:
+                self._save_registry(registry)  # Lo verificado en esta ejecución se conserva.
+                message = missing_message(missing)
+                if blocked is not None:
+                    raise DownloadBlockedError(f"{blocked} {message}") from blocked
+                raise CatalogError(message)
             # Los nombres de los PDF deben ser duraderos antes del puntero.
             _sync_directory(raw_dir)
             self._save_registry(registry)
@@ -399,7 +499,7 @@ class Catalog:
         if not source_path.is_file():
             raise CatalogError(f"«{source_path.name}» no es un archivo regular.")
         if source_path.stat().st_size > _MAX_IMPORT_BYTES:
-            raise CatalogError(f"«{source_path.name}» excede 30 MB.")
+            raise ImportRejectedError(f"«{source_path.name}» excede 30 MB.")
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         raw_dir = self.root / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -419,7 +519,7 @@ class Catalog:
                     while block := source.read(65_536):
                         copied += len(block)
                         if copied > _MAX_IMPORT_BYTES:
-                            raise CatalogError(f"«{source_path.name}» excede 30 MB.")
+                            raise ImportRejectedError(f"«{source_path.name}» excede 30 MB.")
                         digest.update(block)
                         handle.write(block)
                     handle.flush()
@@ -427,7 +527,7 @@ class Catalog:
                 try:
                     pages = run_isolated(inspect_pdf, tmp, timeout=60, memory_mb=1024)
                 except IsolationError as exc:
-                    raise CatalogError(f"El archivo no es un PDF válido: {exc}") from exc
+                    raise ImportRejectedError(f"El archivo no es un PDF válido: {exc}") from exc
                 identification = identify(tmp, expected_period, display_name=source_path.name)
                 identification = Identification(
                     identification.report_id,
@@ -453,7 +553,7 @@ class Catalog:
                 entries = registry.setdefault(report_id, [])
                 previous = _latest_import(entries)
                 if previous is not None and previous["sha256"] != sha256 and not replace:
-                    raise CatalogError(
+                    raise ImportRejectedError(
                         f"Ya hay otro PDF importado para {report_id[4:]} "
                         f"(«{previous['source_name']}», {previous['pages']} páginas); use "
                         "--reemplazar si quiere sustituirlo."
@@ -536,13 +636,23 @@ class Catalog:
             },
         }
 
-    def plan(self, max_reports: int = 12, *, use_imports: bool = False) -> dict[str, object]:
+    def plan(
+        self,
+        max_reports: int = 12,
+        *,
+        use_imports: bool = False,
+        allow_downloads: bool = True,
+        ignore_cooldown: bool = False,
+    ) -> dict[str, object]:
         """Describe qué haría ``sync`` sin descargar ni escribir nada (``--dry-run``)."""
         reports = self.source.discover(max_reports)
         self._validate_window(reports, max_reports)
         exists = self.root.exists()
         registry = self._load_registry() if exists else {}
         active = self.current() if exists else None
+        until = self.blocked_until() if exists and allow_downloads and not ignore_cooldown else None
+        downloads_on = allow_downloads and until is None
+        use_imports = use_imports or not downloads_on
         raw_dir = self.root / "raw"
         rows = []
         for report in reports:
@@ -551,14 +661,25 @@ class Catalog:
             fingerprint = _fingerprint(metadata)
             entries = registry.get(report.report_id, [])
             previous = self._reusable(entries, report.download_url, fingerprint, raw_dir)
-            if previous is not None:
-                status = "sin_cambios" if self._is_fresh(previous) else "revalidar"
+            if previous is not None and self._is_fresh(previous):
+                status = "sin_cambios"
+            elif previous is not None:
+                status = "revalidar" if downloads_on else "pdf_anterior"
             elif use_imports and _latest_import(entries) is not None:
-                status = "importado_si_falla"
+                status = "importado_si_falla" if downloads_on else "importado"
+            elif not downloads_on:
+                status = "falta"
             else:
                 downloads = [e for e in entries if not _is_import(e)]
                 status = "metadatos_o_archivo_cambiados" if downloads else "nuevo"
-            rows.append({"report_id": report.report_id, "title": report.title, "status": status})
+            rows.append(
+                {
+                    "report_id": report.report_id,
+                    "title": report.title,
+                    "status": status,
+                    "source_url": report.source_url,
+                }
+            )
         window = {report.report_id for report in reports}
         leaving = []
         active_records = active[1]["reports"] if active is not None else []
@@ -567,7 +688,11 @@ class Catalog:
             report_id = record["report"]["report_id"]
             if report_id not in window:
                 leaving.append(report_id)
-        return {"window": rows, "leaving": leaving}
+        return {
+            "window": rows,
+            "leaving": leaving,
+            "blocked_until": _iso(until) if until is not None else None,
+        }
 
     def _download(self, report: ReportRecord, raw_dir: Path, fingerprint: str) -> dict[str, object]:
         result = self.downloader.download(report, raw_dir)

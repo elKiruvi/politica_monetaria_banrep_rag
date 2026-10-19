@@ -29,12 +29,25 @@ uv run --frozen ruff check .
 
 **No se ha comprobado una sincronización real de doce PDF:** desde el equipo de desarrollo, el repositorio institucional responde con una verificación antibot (Radware) a las solicitudes de PDF; la descarga falla con un mensaje explícito. El comando falla cerrado; no intentes eludir sus controles ni interpretes un snapshot de catálogo como índice RAG. La [decisión de snapshots](docs/decisiones/0003-catalogo-snapshots.md) detalla sus límites.
 
+Tras el primer reto antibot, `sincronizar` no solicita ningún otro PDF en esa ejecución ni durante las 12 horas siguientes (`--reintentar-ahora` permite un intento manual). Si faltan informes, el error los enumera todos con su enlace oficial ([ADR 0015](docs/decisiones/0015-adquisicion-asistida.md)).
+
+### Completar los últimos 12 con tu navegador
+
+```sh
+uv run --frozen banrep-rag faltantes                    # qué falta y su enlace oficial (DOI)
+# abre cada enlace en tu navegador y guarda el PDF, p. ej. en ~/Descargas
+uv run --frozen banrep-rag importar ~/Descargas         # importa los IPM y omite los demás PDF
+uv run --frozen banrep-rag sincronizar --sin-descargar  # activa la ventana sin pedir PDF
+```
+
+`--sin-descargar` consulta solo Crossref y compone la ventana con descargas verificadas e importados; el catálogo es «los últimos 12», pero `estado` indica qué PDF se importaron y no se verificaron contra la fuente.
+
 ## Estado del catálogo e importación local
 
 `uv run --frozen banrep-rag estado` muestra el catálogo activo, sus informes y cómo se obtuvo cada PDF. Si la descarga automática está bloqueada, puedes descargar los PDF con tu navegador desde el [sitio del Banco](https://www.banrep.gov.co/es/publicaciones-investigaciones/informe-politica-monetaria/historico-informes) e importarlos:
 
 ```sh
-uv run --frozen banrep-rag importar ~/Descargas/informe-politica-monetaria-*.pdf --activar
+uv run --frozen banrep-rag importar ~/Descargas/informe-politica-monetaria-*.pdf --activar   # o una carpeta
 ```
 
 El periodo se identifica con dos evidencias (portada con la serie junto al periodo, y título interno o ISSN de la serie), se rechazan presentaciones, anexos y otros documentos, y los metadatos se verifican en Crossref (`--sin-red` lo omite). Para sustituir un PDF ya importado del mismo periodo se usa `--reemplazar`. Un catálogo importado se marca como tal: **no** equivale a «los últimos 12 informes». Con `sincronizar --usar-importados`, un PDF importado solo sustituye a una descarga que falló. Detalles en la [ADR 0005](docs/decisiones/0005-importacion-local.md).
@@ -98,6 +111,8 @@ docker compose up -d                               # http://127.0.0.1:8000 con d
 ```
 
 La imagen no incluye PDF ni datos, corre sin privilegios y publica el puerto solo en este equipo. Puede usar un Ollama en contenedor con `--profile ollama` (CPU) o `--profile ollama-gpu` (NVIDIA). El Ollama del equipo también sirve, pero en Linux requiere que escuche en la IP del puente de Docker: no use `0.0.0.0`. `uv` sigue siendo la vía principal. Detalles en la [ADR 0014](docs/decisiones/0014-docker.md).
+
+Con **Docker sin root** (*rootless*), el UID 0 del contenedor es tu propio usuario: usa `BANREP_UID=0` y `BANREP_GID=0`. Con `id -u`, el contenedor recibe un UID subordinado y no puede leer el catálogo (0700). Sigue sin capacidades y con `no-new-privileges`. En ese modo, el contenedor no alcanza el Ollama del equipo: la búsqueda funciona en modo léxico, y para generar respuestas se usa `--profile ollama`.
 
 ## Reportes descargables
 
