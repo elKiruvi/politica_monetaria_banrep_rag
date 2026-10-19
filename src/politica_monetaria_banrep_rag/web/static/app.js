@@ -90,6 +90,16 @@ function sourceList(citations, title) {
     ))));
 }
 
+function downloads(exportId) {
+  // Enlaces del mismo origen; el servidor genera el nombre del archivo.
+  if (!exportId || !/^[0-9a-f]{32}$/.test(exportId)) return null;
+  const link = (format, label) => el("a", {
+    href: `${API}/exports/${exportId}?format=${format}`, download: "",
+  }, label);
+  return el("p", { class: "downloads" }, "Descargar reporte: ",
+    link("md", "Markdown"), " · ", link("html", "HTML imprimible"), " · ", link("pdf", "PDF"));
+}
+
 const STATUS_TITLES = {
   answered: "Respuesta verificada",
   insufficient_evidence: "Sin respuesta: evidencia insuficiente",
@@ -108,6 +118,7 @@ function renderAnswer(container, data) {
       ? el("p", { class: "reason" }, `Fuentes añadidas por la verificación: ${data.added_citations.join(", ")}`)
       : null,
     sourceList(shown, data.citations.length ? "Fuentes citadas" : "Evidencia revisada"),
+    downloads(data.export_id),
     el("p", { class: "disclaimer" }, data.disclaimer || ""),
   );
 }
@@ -128,7 +139,6 @@ function renderComparison(container, data) {
   const blocks = [
     warnings([
       ...(data.warnings || []),
-      ...((data.missing_reports || []).length ? [`Informes no indexados: ${data.missing_reports.join(", ")}.`] : []),
       ...(data.corpus.warnings || []),
     ]),
     el("p", {}, `Indicador: «${data.indicator}»; filas buscadas con: ${(data.interpretation || []).join(" + ")}. Las cifras provienen de celdas atribuidas y las diferencias se calculan en Python.`),
@@ -152,6 +162,7 @@ function renderComparison(container, data) {
     ));
   }
   if (data.truncated) blocks.push(el("p", { class: "reason" }, "Se muestran las primeras filas; precise el horizonte."));
+  blocks.push(downloads(data.export_id));
   blocks.push(el("p", { class: "disclaimer" }, data.disclaimer));
   fill(container, ...blocks);
 }
@@ -267,6 +278,8 @@ function setupForms() {
     }, renderAnswer);
   for (const suggestion of document.querySelectorAll(".suggestion")) {
     suggestion.addEventListener("click", () => {
+      // Con una consulta en curso no se envía otra (perdería la respuesta ya calculada).
+      if (ask.querySelector('button[type="submit"]').disabled) return;
       ask.elements.question.value = suggestion.textContent;
       ask.requestSubmit();
     });

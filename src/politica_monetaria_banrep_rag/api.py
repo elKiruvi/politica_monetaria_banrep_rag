@@ -7,11 +7,14 @@ llamadas al modelo de lenguaje y nunca devuelve trazas internas.
 
 import json
 import threading
+import uuid
+from collections import OrderedDict
 from dataclasses import asdict
 from pathlib import Path
 from typing import Annotated, Literal
 
-from fastapi import FastAPI, Request
+from fastapi import FastAPI, Query, Request
+from fastapi import Path as PathParam
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import FileResponse, Response
 from fastapi.staticfiles import StaticFiles
@@ -20,12 +23,14 @@ from starlette.exceptions import HTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
 from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
+from politica_monetaria_banrep_rag import reports as report_export
 from politica_monetaria_banrep_rag.retrieval import SearchFilters
 from politica_monetaria_banrep_rag.service import DISCLAIMER, RagService, ServiceError
 
 API_VERSION = "v1"
 WEB_DIR = Path(__file__).parent / "web" / "static"
 MAX_BODY_BYTES = 16_384
+MAX_EXPORTS = 32  # reportes recientes en memoria; no se escriben en disco
 LOCAL_HOSTS = ["127.0.0.1", "localhost", "[::1]"]
 SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
@@ -158,6 +163,16 @@ def create_app(service: RagService, *, allowed_hosts: list[str] | None = None) -
     app.add_middleware(BodyLimitMiddleware, limit=MAX_BODY_BYTES)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts or LOCAL_HOSTS)
     generation_lock = threading.Lock()
+    exports: OrderedDict[str, report_export.Report] = OrderedDict()
+    exports_lock = threading.Lock()
+
+    def remember(report: report_export.Report) -> str:
+        export_id = uuid.uuid4().hex
+        with exports_lock:
+            exports[export_id] = report
+            while len(exports) > MAX_EXPORTS:
+                exports.popitem(last=False)
+        return export_id
 
     @app.middleware("http")
     async def security(request: Request, call_next):  # type: ignore[no-untyped-def]
@@ -252,8 +267,9 @@ def create_app(service: RagService, *, allowed_hosts: list[str] | None = None) -
                 mode=request.mode,
             )  # fmt: skip
         )
-        return _json({"index_id": result.index_id, "retrieval_mode": result.mode,
-                      "generation_model": result.model,
+        export_id = remember(report_export.report_from_query(result, request.question))
+        return _json({"index_id": result.index_id, "export_id": export_id,
+                      "retrieval_mode": result.mode, "generation_model": result.model,
                       "detected_reports": list(result.detected_reports),
                       **asdict(result.answer), "corpus": result.corpus,
                       "warnings": result.warnings, "disclaimer": DISCLAIMER})  # fmt: skip
@@ -270,7 +286,12 @@ def create_app(service: RagService, *, allowed_hosts: list[str] | None = None) -
         )
         # Los avisos de la comparación (filas omitidas, sin coincidencias) se suman a los del
         # servicio; antes la clave «warnings» los pisaba.
-        return _json({"index_id": result.index_id, **asdict(result.comparison),
+        export_id = remember(report_export.report_from_comparison(result, {
+            "Pregunta": request.question, "Informes": ", ".join(request.reports) or None,
+            "Indicador": request.indicator, "Horizonte": request.horizon, "Cuadro": request.table,
+        }))  # fmt: skip
+        return _json({"index_id": result.index_id, "export_id": export_id,
+                      **asdict(result.comparison),
                       "missing_reports": list(result.missing_reports),
                       "table_notes": result.table_notes, "corpus": result.corpus,
                       "warnings": [*result.warnings, *result.comparison.warnings],
@@ -283,10 +304,35 @@ def create_app(service: RagService, *, allowed_hosts: list[str] | None = None) -
                 request.report, topic=request.topic, top_k=request.top_k, mode=request.mode
             )
         )
-        return _json({"index_id": result.index_id, "report": result.report.to_dict(),
+        export_id = remember(report_export.report_from_summary(result))
+        return _json({"index_id": result.index_id, "export_id": export_id,
+                      "report": result.report.to_dict(),
                       "topic": result.topic, "generation_model": result.model,
                       **asdict(result.answer), "corpus": result.corpus,
                       "warnings": result.warnings, "disclaimer": DISCLAIMER})  # fmt: skip
+
+    @app.get(f"{prefix}/exports/{{export_id}}")
+    def export(
+        export_id: Annotated[str, PathParam(pattern=r"^[0-9a-f]{32}$")],
+        format: Annotated[Literal["md", "html", "pdf"], Query()] = "md",
+    ) -> Response:
+        """Descarga el reporte de un resultado reciente (consulta, comparación o resumen)."""
+        with exports_lock:
+            report = exports.get(export_id)
+        if report is None:
+            raise ServiceError(
+                "not_found", "El reporte ya no está disponible; repita la operación."
+            )
+        stamp = report.created_at[:10]
+        filename = f"{report.filename}-{stamp}.{format}"  # generado aquí: sin rutas del cliente
+        return Response(
+            report_export.render(report, format),
+            media_type=report_export.FORMATS[format],
+            headers={
+                **SECURITY_HEADERS,
+                "Content-Disposition": f'attachment; filename="{filename}"',
+            },  # fmt: skip
+        )
 
     return app
 

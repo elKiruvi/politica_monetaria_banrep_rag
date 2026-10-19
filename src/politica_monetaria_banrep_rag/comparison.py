@@ -353,7 +353,7 @@ def compare(
     if hidden:
         warnings.append(
             f"Se omitieron {hidden} fila(s) sin cifras marcadas como proyección (negrilla o "
-            "«proy»); use --incluir-observados para verlas."
+            "«proy»); inclúyalas con la opción de filas sin proyecciones (--incluir-observados)."
         )
     if not chosen:
         warnings.append(

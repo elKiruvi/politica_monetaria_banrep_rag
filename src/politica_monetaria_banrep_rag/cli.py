@@ -9,7 +9,7 @@ from contextlib import ExitStack
 from dataclasses import asdict
 from pathlib import Path
 
-from politica_monetaria_banrep_rag import diagnostics
+from politica_monetaria_banrep_rag import diagnostics, reports
 from politica_monetaria_banrep_rag.answering import Answer
 from politica_monetaria_banrep_rag.catalog import Catalog, CatalogError
 from politica_monetaria_banrep_rag.comparison import (
@@ -592,6 +592,27 @@ def _print_answer(answer: Answer) -> None:
     print(f"\n{DISCLAIMER}")
 
 
+def _export(parser: argparse.ArgumentParser, args: argparse.Namespace, build) -> None:  # type: ignore[no-untyped-def]
+    """Escribe el reporte si se pidió «--exportar»; el formato sale de la extensión."""
+    target = getattr(args, "exportar", None)
+    if target is None:
+        return
+    output_format = target.suffix.lower().lstrip(".")
+    if output_format not in reports.FORMATS:
+        parser.exit(2, "Error: el archivo del reporte debe terminar en .md, .html o .pdf.\n")
+    if target.exists() and not args.sobrescribir:
+        parser.exit(2, f"Error: {target} ya existe; use «--sobrescribir» para reemplazarlo.\n")
+    data = reports.render(build(), output_format)
+    tmp = target.with_name(f".{target.name}.tmp")
+    try:
+        tmp.write_bytes(data)
+        os.replace(tmp, target)
+    except OSError as exc:
+        tmp.unlink(missing_ok=True)
+        parser.exit(1, f"Error al guardar el reporte: {_local_failure(exc)}\n")
+    print(f"Reporte guardado en {target}.", file=sys.stderr)
+
+
 def _query(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     try:
         filters = _filters(args)
@@ -607,6 +628,7 @@ def _query(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             f"Informes mencionados en la pregunta: {', '.join(result.detected_reports)}.",
             file=sys.stderr if args.json else sys.stdout,
         )
+    _export(parser, args, lambda: reports.report_from_query(result, args.pregunta))
     if args.json:
         payload = {
             "index_id": result.index_id,
@@ -702,6 +724,20 @@ def _compare(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         )
     except ServiceError as exc:
         _fail(parser, "Error", exc)
+    _export(
+        parser,
+        args,
+        lambda: reports.report_from_comparison(
+            result,
+            {
+                "Pregunta": args.pregunta,
+                "Informes": ", ".join(args.informe or ()) or None,
+                "Indicador": args.indicador,
+                "Horizonte": args.horizonte,
+                "Cuadro": args.cuadro,
+            },
+        ),  # fmt: skip
+    )
     if args.json:
         payload = {
             "index_id": result.index_id,
@@ -729,6 +765,7 @@ def _summarize(parser: argparse.ArgumentParser, args: argparse.Namespace) -> Non
     except ServiceError as exc:
         _fail(parser, "Error de resumen", exc)
     _print_warnings(result.warnings)
+    _export(parser, args, lambda: reports.report_from_summary(result))
     if args.json:
         payload = {"index_id": result.index_id, "report_id": result.report.report_id,
                    "topic": args.tema, "generation_model": result.model,
@@ -980,6 +1017,13 @@ def main() -> None:
         f"{DEFAULT_GENERATION_MODEL})",
     )
     _add_filters(query_cmd)
+    query_cmd.add_argument(
+        "--exportar", type=Path, metavar="ARCHIVO",
+        help="Guarda un reporte (.md, .html o .pdf) con citas, metodología y advertencias",
+    )  # fmt: skip
+    query_cmd.add_argument(
+        "--sobrescribir", action="store_true", help="Reemplaza el archivo del reporte si existe"
+    )
     query_cmd.add_argument("--json", action="store_true", help="Emite la respuesta en JSON")
     compare_cmd = subcommands.add_parser(
         "comparar", help="Compara cifras de cuadros entre informes (cálculo determinista)"
@@ -997,6 +1041,13 @@ def main() -> None:
         "--incluir-observados", action="store_true",
         help="Incluye filas sin cifras marcadas como proyección (negrilla o «proy»)",
     )  # fmt: skip
+    compare_cmd.add_argument(
+        "--exportar", type=Path, metavar="ARCHIVO",
+        help="Guarda un reporte (.md, .html o .pdf) con citas, metodología y advertencias",
+    )  # fmt: skip
+    compare_cmd.add_argument(
+        "--sobrescribir", action="store_true", help="Reemplaza el archivo del reporte si existe"
+    )
     compare_cmd.add_argument("--json", action="store_true", help="Emite la comparación en JSON")
     summary_cmd = subcommands.add_parser(
         "resumir", help="Resume un informe o un tema con evidencia citada (Ollama local)"
@@ -1010,6 +1061,13 @@ def main() -> None:
         help="Fragmentos de evidencia (1 a 12; por defecto 8)",
     )  # fmt: skip
     summary_cmd.add_argument("--modelo", help="Modelo de generación de Ollama")
+    summary_cmd.add_argument(
+        "--exportar", type=Path, metavar="ARCHIVO",
+        help="Guarda un reporte (.md, .html o .pdf) con citas, metodología y advertencias",
+    )  # fmt: skip
+    summary_cmd.add_argument(
+        "--sobrescribir", action="store_true", help="Reemplaza el archivo del reporte si existe"
+    )
     summary_cmd.add_argument("--json", action="store_true", help="Emite el resumen en JSON")
     serve_cmd = subcommands.add_parser("servir", help="Inicia la API y la interfaz web locales")
     serve_cmd.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
