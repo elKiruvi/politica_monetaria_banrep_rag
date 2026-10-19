@@ -50,7 +50,7 @@ docker compose exec ollama ollama pull qwen3:4b-instruct # una vez, ~2,5 GB
 - En el equipo de desarrollo **no hay Docker** y no se instaló, porque sería un cambio global no autorizado.
 - La verificación real corre en GitHub Actions (`.github/workflows/docker.yml`) en cada PR que toca la imagen y en `main`:
   - `docker compose config` y la construcción de la imagen.
-  - Que la imagen no contenga PDF (búsqueda como root en todo el sistema de archivos) ni `.sqlite` o `.npy` fuera de `site-packages`. Las dependencias traen `.npy` de prueba (numpy) y el proyecto no se instala en `site-packages` como índice.
+  - Que la imagen no contenga PDF (búsqueda como root en todo el sistema de archivos) ni `.sqlite` o `.npy`, salvo los `.npy` de prueba que trae numpy en su propio paquete.
   - Que no queden `uv` ni `/app/src`, y que la imagen use un usuario distinto de root.
   - `docker compose up` sobre un catálogo vacío hasta el estado *healthy*.
   - `/api/v1/health` 200, `/api/v1/ready` 503 (sin índice no está lista), `/` 200 y un `Host` ajeno 400.
