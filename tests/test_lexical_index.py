@@ -138,7 +138,8 @@ def ids(hits):
     "query,expected",
     [
         ("¿Cuál fue la inflación?", '"inflacion"'),
-        ("3,5 %", '"3 5 por ciento"'),
+        ("3,5 %", '"3_5 por ciento"'),
+        ("13.451 y 9,25", '"13__451" OR "9_25" OR "13__451 y 9_25"'),
         (
             "tasa de política monetaria",
             '"tasa" OR "politica" OR "monetaria" OR "tasa de politica monetaria"',
@@ -174,6 +175,26 @@ def test_percent_matches_written_form_and_numbers_are_phrases(index):
     assert any("3,5 por ciento" in text for text in texts)
     # «3» y «5» por separado no bastan: «2,6» o «4,79» no aparecen.
     assert all("3,5" in text for text in texts)
+
+
+def test_numbers_do_not_match_neighbouring_figures_or_figure_numbers(tmp_path):
+    chunks = (
+        chunk("n1", "2025-07", "Cuadro: 4,9 | 25,7 | 3 | 5"),
+        chunk("n2", "2025-07", "Véase el Gráfico 3.5 del capítulo."),
+        chunk("n3", "2025-07", "La TPM se mantuvo en el 9,25 % y la meta en el 3,5 %."),
+    )
+    path = tmp_path / "lexical.sqlite"
+    digest = chunk_ids_digest(c.chunk_id for c in chunks)
+    build_lexical_index(path, REPORTS, chunks, digest)
+    index = LexicalIndex(path, chunk_count=3, chunk_ids_sha256=digest)
+    try:
+        for query in ("9,25", "3,5", "3,5 %"):
+            assert [h.chunk.text for h in index.search(query, SearchFilters(), 5)] == [
+                chunks[2].text
+            ]
+        assert [h.chunk.text for h in index.search("3.5", SearchFilters(), 5)] == [chunks[1].text]
+    finally:
+        index.close()
 
 
 def test_ties_are_deterministic_by_chunk_id(index):
@@ -287,8 +308,9 @@ def test_invalid_filters_are_rejected(kwargs):
         SearchFilters(**kwargs)
 
 
-def test_filters_python_semantics_match_sql(index):
-    filters = SearchFilters(period_from="2025-08", section="pronosticos", kinds=("paragraph",))
+@pytest.mark.parametrize("section", ["pronosticos", " Pronósticos  "])
+def test_filters_python_semantics_match_sql(index, section):
+    filters = SearchFilters(period_from="2025-08", section=section, kinds=("paragraph",))
     sql = ids(index.search("petróleo precio", filters, 20))
     reports = {r.report_id: r for r in REPORTS}
     python = sorted(
@@ -307,7 +329,9 @@ def test_filters_python_semantics_match_sql(index):
         ({"kind": "imagen"}, "tipo"),
         ({"evidence_quality": "verificado"}, "tipo o calidad"),
         ({"attributed_cells": [CELL.__dict__], "evidence_quality": "narrative_only"}, "celdas"),
-        ({"table_id": None, "kind": "table_notes"}, "vínculo"),
+        ({"table_id": None, "kind": "table_notes", "evidence_quality": "note_only"}, "vínculo"),
+        ({"evidence_quality": "structured_cells"}, "incompatible"),
+        ({"kind": "table_raw", "evidence_quality": "structured_cells"}, "incompatible"),
         ({"text": "  "}, "vacío"),
         ({"chunk_id": "../x"}, "identificador"),
     ],

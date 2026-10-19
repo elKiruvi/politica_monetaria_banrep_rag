@@ -7,9 +7,9 @@ aparecer en el texto recuperado. La relevancia se mide en tres niveles:
 - ``page``: además, su rango de páginas incluye alguna de las páginas juzgadas.
 - ``evidence``: además, contiene el texto literal del juicio (sin distinguir tildes ni espacios).
 
-Un juicio se acredita una sola vez (recall y ganancia de nDCG); la precisión cuenta todos los
-resultados que satisfacen algún juicio. Los juicios no dependen de ``chunk_id``, que cambia con
-las versiones del fragmentador.
+Recall cuenta los juicios cubiertos; en nDCG cada posición acredita un solo juicio y cada juicio
+una sola vez; la precisión cuenta todos los resultados que satisfacen algún juicio. Los juicios
+no dependen de ``chunk_id``, que cambia con las versiones del fragmentador.
 """
 
 import json
@@ -84,7 +84,10 @@ def load_queries(path: Path) -> list[EvalQuery]:
             )
             for entry in item.get("relevant", [])
         )
-        if any(not j.pages or j.grade not in {1, 2} for j in judgments):
+        if any(
+            not j.pages or j.grade not in {1, 2} or not isinstance(j.contains, str | None)
+            for j in judgments
+        ):
             raise ValueError(f"Juicio inválido en {item['id']}.")
         queries.append(
             EvalQuery(
@@ -113,8 +116,14 @@ def matches(chunk: IndexedChunk, judgment: Judgment, level: str) -> bool:
 
 
 def score(chunks: list[IndexedChunk], judgments: tuple[Judgment, ...], k: int, level: str):
-    """Precision@k, Recall@k, MRR y nDCG@k de una lista ordenada."""
+    """Precision@k, Recall@k, MRR y nDCG@k de una lista ordenada.
+
+    Recall cuenta los juicios cubiertos por algún resultado. En nDCG cada posición acredita como
+    máximo un juicio (el de mayor grado aún no acreditado), igual que la ordenación ideal, de modo
+    que una lista perfecta vale 1 aunque varios juicios compartan informe o página.
+    """
     top = chunks[:k]
+    covered: set[int] = set()
     credited: set[int] = set()
     relevant_hits = 0
     first: int | None = None
@@ -125,16 +134,17 @@ def score(chunks: list[IndexedChunk], judgments: tuple[Judgment, ...], k: int, l
             continue
         relevant_hits += 1
         first = first or position
+        covered.update(matched)
         fresh = [i for i in matched if i not in credited]
         if fresh:
-            gain = max(judgments[i].grade for i in fresh)
-            credited.update(fresh)
-            dcg += (2**gain - 1) / math.log2(position + 1)
+            best = max(fresh, key=lambda i: judgments[i].grade)
+            credited.add(best)
+            dcg += (2 ** judgments[best].grade - 1) / math.log2(position + 1)
     ideal = sorted((j.grade for j in judgments), reverse=True)[:k]
     idcg = sum((2**g - 1) / math.log2(i + 2) for i, g in enumerate(ideal))
     return {
         "precision": relevant_hits / k,
-        "recall": len(credited) / len(judgments),
+        "recall": len(covered) / len(judgments),
         "mrr": 1 / first if first else 0.0,
         "ndcg": dcg / idcg if idcg else 0.0,
     }
@@ -152,6 +162,17 @@ def unresolved(queries: list[EvalQuery], chunks: list[IndexedChunk]) -> list[str
             ):
                 problems.append(f"{query.query_id}: {judgment.report_id} {judgment.pages}")
     return problems
+
+
+def _summary(rows: list[dict[str, object]]) -> dict[str, dict[str, float]]:
+    summary: dict[str, dict[str, float]] = {}
+    for level in LEVELS:
+        values: dict[str, float] = {}
+        for name in ("precision", "recall", "mrr", "ndcg"):
+            samples = [row["metrics"][level][name] for row in rows]  # type: ignore[index]
+            values[name] = round(statistics.fmean(samples), 4) if samples else 0.0
+        summary[level] = values
+    return summary
 
 
 def evaluate(
@@ -179,6 +200,7 @@ def evaluate(
             "id": query.query_id,
             "category": query.category,
             "answerable": bool(query.judgments),
+            "report_filter": bool(query.filters.report_ids),
             "results": len(hits),
             "top": [
                 f"{c.report_id} p{c.page_start}"
@@ -190,17 +212,7 @@ def evaluate(
             row["metrics"] = {level: score(chunks, query.judgments, k, level) for level in LEVELS}
         rows.append(row)
     answerable = [row for row in rows if row["answerable"]]
-    summary: dict[str, dict[str, float]] = {}
-    for level in LEVELS:
-        summary[level] = {
-            name: round(
-                statistics.fmean(row["metrics"][level][name] for row in answerable),  # type: ignore[index]
-                4,
-            )
-            if answerable
-            else 0.0
-            for name in ("precision", "recall", "mrr", "ndcg")
-        }
+    unfiltered = [row for row in answerable if not row["report_filter"]]
     ordered = sorted(latencies)
     return {
         "k": k,
@@ -210,7 +222,10 @@ def evaluate(
             1 for row in rows if not row["answerable"] and row["results"] == 0
         ),
         "skipped_missing_reports": skipped,
-        "metrics": summary,
+        # Con filtro de informe, el nivel documento vale 1 por construcción: se separa.
+        "metrics": _summary(answerable),
+        "metrics_without_report_filter": _summary(unfiltered),
+        "queries_without_report_filter": len(unfiltered),
         "latency_ms": {
             "p50": round(statistics.median(ordered), 2) if ordered else None,
             "p95": round(ordered[min(len(ordered) - 1, math.ceil(0.95 * len(ordered)) - 1)], 2)

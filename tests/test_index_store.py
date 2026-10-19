@@ -138,6 +138,17 @@ def test_damaged_pointer_is_rejected(tmp_path, content):
         manager.open_active()
 
 
+def test_damaged_pointer_is_replaced_only_when_forced(tmp_path):
+    manager = IndexManager(tmp_path)
+    build(manager)
+    (tmp_path / "indexes" / "current.json").write_bytes(b"{")
+    with pytest.raises(IndexStoreError, match="--forzar"):
+        build(manager)
+    result = build(manager, force=True)
+    assert manager.active_id() == result.index_id
+    manager.open_active().close()
+
+
 def test_incompatible_format_is_rejected(tmp_path, monkeypatch):
     manager = IndexManager(tmp_path)
     build(manager)

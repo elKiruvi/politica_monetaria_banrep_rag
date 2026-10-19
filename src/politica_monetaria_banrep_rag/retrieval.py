@@ -25,6 +25,17 @@ CHUNK_KINDS = frozenset(
 EVIDENCE_QUALITIES = frozenset(
     {"structured_cells", "unattributed_values", "caption_only", "narrative_only", "note_only"}
 )
+# Calidades posibles por tipo de fragmento, según processing.Unit y chunking.chunk_document.
+_KIND_QUALITIES = {
+    "paragraph": {"narrative_only"},
+    "table": {"structured_cells", "unattributed_values"},
+    "table_notes": {"note_only"},
+    "table_raw": {"unattributed_values"},
+    "chart_caption": {"caption_only"},
+    "caption": {"caption_only"},
+    "source_note": {"note_only"},
+    "footnote": {"note_only"},
+}
 _PERIOD = re.compile(r"\d{4}-(0[1-9]|1[0-2])")
 _REPORT_ID = re.compile(r"ipm-\d{4}-\d{2}")
 _CHUNK_ID = re.compile(r"[0-9a-f]{32}")
@@ -152,6 +163,8 @@ class IndexedChunk:
             raise InvalidChunkError("identificador de fragmento inválido")
         if chunk.kind not in CHUNK_KINDS or chunk.evidence_quality not in EVIDENCE_QUALITIES:
             raise InvalidChunkError(f"tipo o calidad desconocidos en {chunk.chunk_id}")
+        if chunk.evidence_quality not in _KIND_QUALITIES[chunk.kind]:
+            raise InvalidChunkError(f"calidad incompatible con el tipo en {chunk.chunk_id}")
         if not chunk.text.strip():
             raise InvalidChunkError(f"fragmento vacío {chunk.chunk_id}")
         if not 1 <= chunk.page_start <= chunk.page_end <= pages:
@@ -196,7 +209,10 @@ class SearchFilters:
             (not self.report_ids or chunk.report_id in self.report_ids)
             and (self.period_from is None or report.reference_period >= self.period_from)
             and (self.period_to is None or report.reference_period <= self.period_to)
-            and (self.section is None or fold(self.section) in fold(" > ".join(chunk.section)))
+            and (
+                self.section is None
+                or fold(self.section.strip()) in fold(" > ".join(chunk.section))
+            )
             and (not self.kinds or chunk.kind in self.kinds)
             and (not self.evidence_qualities or chunk.evidence_quality in self.evidence_qualities)
         )

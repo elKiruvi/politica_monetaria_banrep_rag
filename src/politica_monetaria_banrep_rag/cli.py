@@ -477,6 +477,13 @@ def _evaluate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
             f"  {label:<10} P@{args.k} {values['precision']:.3f}  R@{args.k} "
             f"{values['recall']:.3f}  MRR {values['mrr']:.3f}  nDCG@{args.k} {values['ndcg']:.3f}"
         )
+    unfiltered = result["metrics_without_report_filter"]
+    assert isinstance(unfiltered, dict)
+    print(
+        f"  Sin filtro de informe ({result['queries_without_report_filter']} consultas): "
+        f"documento MRR {unfiltered['document']['mrr']:.3f}, página MRR "
+        f"{unfiltered['page']['mrr']:.3f}, evidencia MRR {unfiltered['evidence']['mrr']:.3f}"
+    )
     latency = result["latency_ms"]
     assert isinstance(latency, dict)
     print(f"  Latencia por consulta: p50 {latency['p50']} ms, p95 {latency['p95']} ms.")

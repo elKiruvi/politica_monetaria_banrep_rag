@@ -47,6 +47,11 @@ def test_scores_match_hand_computation():
     dcg = 3 / math.log2(3) + 1 / math.log2(5)
     idcg = 3 / math.log2(2) + 1 / math.log2(3)
     assert result["ndcg"] == pytest.approx(dcg / idcg)
+    # Varios juicios del mismo informe: una lista perfecta vale 1 en nDCG de documento.
+    perfect = score([good, support], judgments, 2, "document")
+    assert perfect == {"precision": 1.0, "recall": 1.0, "mrr": 1.0, "ndcg": 1.0}
+    single = score([good], judgments, 2, "document")
+    assert single["recall"] == 1.0 and single["ndcg"] < 1.0
     empty = score([], judgments, 4, "evidence")
     assert empty == {"precision": 0.0, "recall": 0.0, "mrr": 0.0, "ndcg": 0.0}
 
@@ -117,6 +122,11 @@ def test_repository_queries_are_well_formed():
         },  # fmt: skip
         {"id": "a", "query": "x", "filters": {"periodo": "2025"}, "relevant": []},
         {"id": "a", "query": "x", "filters": {"report_ids": "ipm-2025-07"}, "relevant": []},
+        {
+            "id": "a",
+            "query": "x",
+            "relevant": [{"report_id": "ipm-2025-07", "pages": [1], "contains": 5}],
+        },  # fmt: skip
     ],
 )
 def test_invalid_query_files_are_rejected(tmp_path, item):

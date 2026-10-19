@@ -19,7 +19,7 @@
 
 - `descubrir`, `sincronizar`, `importar`, `estado`, `diagnostico-fuentes` (F2–F3, ver README).
 - `procesar`: cinco PDF importados → 1 566 fragmentos (304, 304, 303, 311 y 344; `max_chars=1400`), cuadros con calidad por unidad; enero de 2025 degradado.
-- `indexar`, `buscar --modo lexico`, `validar-indice`, `evaluar`: índice léxico de los 1 566 fragmentos en < 1 s; búsqueda en ~1 ms. Línea base (k=5, 14 consultas con respuesta): MRR documento 0,929, página 0,681 y evidencia 0,574 (ADR 0007).
+- `indexar`, `buscar --modo lexico`, `validar-indice`, `evaluar`: índice léxico de los 1 566 fragmentos en < 1 s; búsqueda en ~1 ms. Línea base léxica (k=5, 14 consultas con respuesta): MRR documento 0,929, página 0,681 y evidencia 0,562 (ADR 0007).
 
 ## Evidencia de acceso (16-10-2026)
 

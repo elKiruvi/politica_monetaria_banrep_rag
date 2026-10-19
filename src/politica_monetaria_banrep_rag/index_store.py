@@ -202,9 +202,20 @@ class IndexManager:
         with self._lock():
             for leftover in self.directory.glob(".tmp-*"):
                 shutil.rmtree(leftover, ignore_errors=True)  # construcciones interrumpidas
+            for leftover in self.directory.glob(".snapshot-*"):
+                leftover.unlink(missing_ok=True)  # escrituras atómicas interrumpidas
             corpus = load()
             key = build_key(corpus)
-            pointer = self._pointer()
+            try:
+                pointer = self._pointer()
+            except IndexStoreError:
+                if not force:
+                    raise IndexStoreError(
+                        "El puntero del índice activo está dañado; ejecute «banrep-rag indexar "
+                        "--forzar» para publicar un índice nuevo (se pierde el historial de "
+                        "reversión)."
+                    ) from None
+                pointer = None
             if pointer is not None and not force:
                 try:
                     active = self.open(str(pointer["index"]))

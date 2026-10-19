@@ -4,8 +4,9 @@ Decisiones (ADR 0007):
 
 - Tokenizador ``unicode61 remove_diacritics 2``: «inflacion» encuentra «inflación». El texto
   guardado y devuelto es el original; solo la columna indexada se normaliza.
-- ``%`` se indexa como «por ciento», de modo que «3,5 %» y «3,5 por ciento» coinciden. Las cifras
-  se buscan como frase: «3,5» exige los tokens «3» y «5» contiguos.
+- ``%`` se indexa como «por ciento», de modo que «3,5 %» y «3,5 por ciento» coinciden. Cada cifra
+  es un solo token (``3_5``; separador de miles o punto: ``3__5``), así que «3,5» no coincide con
+  cifras vecinas ni con «Gráfico 3.5».
 - La consulta del usuario nunca llega como sintaxis FTS5: se convierte en términos entre comillas
   unidos por ``OR`` (más una frase exacta en consultas cortas), sin palabras vacías.
 - ``bm25()`` devuelve valores más negativos para mejores resultados. Se ordena por (bm25,
@@ -26,8 +27,8 @@ from politica_monetaria_banrep_rag.retrieval import (
     fold,
 )
 
-LEXICAL_FORMAT = "fts5-1"
-TOKENIZER = "unicode61 remove_diacritics 2"
+LEXICAL_FORMAT = "fts5-2"
+TOKENIZER = "unicode61 remove_diacritics 2 tokenchars '_'"
 MAX_QUERY_CHARS = 500
 _MAX_TERMS = 32
 _PHRASE_MAX_TOKENS = 6
@@ -39,7 +40,9 @@ _STOPWORDS = frozenset(
     mi muy no o para pero por porque que qué se segun si sin sobre su sus tambien te tiene u un
     una uno unos unas y ya dice dijo informo""".split()
 )
-_TERM = re.compile(r"\d+(?:[.,]\d+)*(?:\s+por\s+ciento)?|\w+")
+_TERM = re.compile(r"\d\w*(?:\s+por\s+ciento)?|\w+")
+_DECIMAL = re.compile(r"(?<=\d),(?=\d)")
+_GROUPING = re.compile(r"(?<=\d)\.(?=\d)")
 
 _SCHEMA = f"""
 CREATE TABLE meta (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -68,6 +71,10 @@ class LexicalIndexError(Exception):
 
 
 def normalize_for_index(text: str) -> str:
+    """Cada cifra es un solo token: «3,5» → ``3_5`` y «13.451» o «3.5» → ``13__451``/``3__5``.
+
+    Así «3,5» no coincide con «3» y «5» vecinos ni con «Gráfico 3.5»."""
+    text = _GROUPING.sub("__", _DECIMAL.sub("_", text))
     return text.replace("%", " por ciento ")
 
 
