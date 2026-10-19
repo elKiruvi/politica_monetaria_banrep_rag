@@ -10,7 +10,7 @@ rechaza en lugar de mostrarse.
 
 import re
 from collections.abc import Callable
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 from politica_monetaria_banrep_rag.generation import GenerationProvider
 from politica_monetaria_banrep_rag.retrieval import IndexedChunk, RetrievalHit
@@ -55,39 +55,63 @@ la evidencia.
 9. Devuelve SOLO un objeto JSON con exactamente estas claves: "answer" (texto), "citations" \
 (lista de identificadores como "E1") e "insufficient_evidence" (true o false)."""
 
-_CITATION = re.compile(r"\[E(\d+)\]")
+# «[E1]» o agrupadas: «[E1, E3]».
+_CITATION = re.compile(r"\[(E\d+(?:\s*[,;]\s*E\d+)*)\]")
 _MONTHS = {"enero": "01", "abril": "04", "julio": "07", "octubre": "10"}
-# Solo formulaciones que nombran un informe: «para diciembre de 2025» es un horizonte.
+# Solo formulaciones que nombran un informe («informe de julio de 2025», «IPM octubre 2025»,
+# «el de octubre de 2025» tras un informe). «En julio de 2025» o «para diciembre de 2025» pueden
+# ser meses de datos u horizontes y no se interpretan.
 _REPORT_MENTION = re.compile(
     r"\b(?:informe|ipm)\s+(?:de\s+(?:pol[ií]tica\s+monetaria\s+(?:de\s+)?)?)?"
-    r"(enero|abril|julio|octubre)\s+(?:de\s+|del\s+)?(\d{4})\b"
-    r"|\ben\s+(?:el\s+informe\s+de\s+)?(enero|abril|julio|octubre)\s+de\s+(\d{4})\b",
+    r"(enero|abril|julio|octubre)\s+(?:de\s+|del\s+)?(\d{4})\b",
+    re.IGNORECASE,
+)
+_FOLLOW_UP = re.compile(
+    r"\b(?:el|la|al|y)\s+(?:del?\s+)?(enero|abril|julio|octubre)\s+(?:de\s+|del\s+)?(\d{4})\b",
     re.IGNORECASE,
 )
 
 
-def detect_reports(question: str, available: dict[str, str]) -> tuple[str, ...]:
-    """Informes nombrados explícitamente en la pregunta y presentes en el índice.
+def detect_reports(
+    question: str, available: dict[str, str]
+) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """Informes nombrados explícitamente en la pregunta.
 
-    ``available`` asocia el periodo de referencia (AAAA-MM) con el ``report_id``."""
-    found = []
-    for match in _REPORT_MENTION.finditer(question):
-        month = (match.group(1) or match.group(3)).lower()
-        year = match.group(2) or match.group(4)
-        period = f"{year}-{_MONTHS[month]}"
-        if period in available:
-            found.append(available[period])
-    return tuple(dict.fromkeys(found))
+    ``available`` asocia el periodo (AAAA-MM) con el ``report_id``. Devuelve (informes indexados,
+    periodos nombrados que no están en el índice). Tras una mención de informe, «el de octubre de
+    2025» o «y el de enero de 2026» también cuentan."""
+    matches = list(_REPORT_MENTION.finditer(question))
+    if matches:
+        matches += [m for m in _FOLLOW_UP.finditer(question) if m.start() > matches[0].start()]
+    found: list[str] = []
+    missing: list[str] = []
+    for match in sorted(matches, key=lambda m: m.start()):
+        period = f"{match.group(2)}-{_MONTHS[match.group(1).lower()]}"
+        (found if period in available else missing).append(available.get(period, period))
+    return tuple(dict.fromkeys(found)), tuple(dict.fromkeys(missing))
 
 
-_NUMBER = re.compile(r"(?<![\w.,])[-−–]?\d+(?:[.,]\d+)*")
+# Una cifra: el signo solo cuenta si no sigue a una letra o dígito (no es un guion de palabra).
+_NUMBER = re.compile(r"(?:(?<![\w.,])[-−–])?(?<![\d])\d+(?:[.,]\d+)*")
 _PAGE_REF = re.compile(
-    r"\bp(?:[áa]g(?:ina)?s?)?\.?\s*(\d+)(?:\s*(?:-|–|y|a)\s*(\d+))?", re.IGNORECASE
+    r"\b(?:p[áa]gs?|p[áa]ginas?)\.?\s*(\d+)(?:\s*(?:-|–|a)\s*(\d+))?", re.IGNORECASE
 )
 # «dic-23», «jun 24»: encabezados de mes y año corto; el año completo equivale.
 _MONTH_YEAR = re.compile(
-    r"\b(?:ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)[a-z]*[-\s.](\d{2})\b", re.IGNORECASE
+    r"\b(?:ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)[-\s.](\d{2})\b", re.I
 )
+_WORD_NUMBERS = {
+    "cero": 0, "uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5, "seis": 6,
+    "siete": 7, "ocho": 8, "nueve": 9, "diez": 10, "once": 11, "doce": 12, "trece": 13,
+    "catorce": 14, "quince": 15, "dieciséis": 16, "diecisiete": 17, "dieciocho": 18,
+    "diecinueve": 19, "veinte": 20, "treinta": 30, "cuarenta": 40, "cincuenta": 50,
+    "sesenta": 60, "setenta": 70, "ochenta": 80, "noventa": 90, "cien": 100, "ciento": 100,
+}  # fmt: skip
+# Cifras escritas en palabras como dato («diez por ciento», «dos puntos porcentuales»).
+_WORD_FIGURE = re.compile(
+    r"\b(" + "|".join(_WORD_NUMBERS) + r")\s+(?:por\s+ciento|puntos?\b|pb\b|pp\b)", re.I
+)
+_YEAR = re.compile(r"^(?:19|20)\d{2}$")
 
 
 @dataclass(frozen=True)
@@ -129,12 +153,13 @@ class Answer:
     citations: tuple[Citation, ...] = ()
     evidence: tuple[Citation, ...] = ()
     reason: str | None = None
-    warnings: tuple[str, ...] = field(default=())
 
 
 def _neutralize(text: str) -> str:
     """Impide que un fragmento cierre o abra bloques de evidencia o finja ser instrucción."""
-    return text.replace("<", "‹").replace(">", "›")
+    for original, safe in (("<", "‹"), (">", "›"), ("＜", "‹"), ("＞", "›"), ('"', "”")):
+        text = text.replace(original, safe)
+    return text
 
 
 def render_evidence(label: str, hit: RetrievalHit, notes: list[IndexedChunk]) -> str:
@@ -176,8 +201,32 @@ def build_messages(question: str, blocks: list[str]) -> tuple[str, str]:
     return SYSTEM_PROMPT, user
 
 
+def _canonical(token: str) -> str:
+    """«-4,70» → «-4.7»; «13.451» (miles) → «13451»; «4.7» → «4.7»."""
+    negative = token[0] in "-−–"
+    body = token.lstrip("-−–")
+    if re.fullmatch(r"\d{1,3}(?:\.\d{3})+(?:,\d+)?", body):
+        body = body.replace(".", "")
+    body = body.replace(",", ".")
+    if "." in body:
+        body = body.rstrip("0").rstrip(".")
+    body = body.lstrip("0") or "0"
+    if body.startswith("."):
+        body = "0" + body
+    return f"-{body}" if negative and body != "0" else body
+
+
 def _numbers(text: str) -> set[str]:
-    return {match.group().lstrip("-−–").replace(",", ".") for match in _NUMBER.finditer(text)}
+    """Cifras de un texto, con signo, incluidas las escritas en palabras como dato."""
+    found = {_canonical(match.group()) for match in _NUMBER.finditer(text)}
+    found |= {str(_WORD_NUMBERS[m.group(1).lower()]) for m in _WORD_FIGURE.finditer(text)}
+    return found
+
+
+def _evidence_numbers(text: str) -> set[str]:
+    """Cifras que habilita la evidencia: con su signo y también su magnitud («-0,4» → «0.4»)."""
+    found = _numbers(text)
+    return found | {number.lstrip("-") for number in found}
 
 
 def verify(
@@ -202,7 +251,7 @@ def verify(
         return "rejected", "", [], "El modelo devolvió una respuesta con formato inválido."
     if insufficient:
         return "insufficient_evidence", "", [], "El modelo indicó que la evidencia no basta."
-    in_text = [f"E{number}" for number in _CITATION.findall(answer)]
+    in_text = [label for group in _CITATION.findall(answer) for label in re.findall(r"E\d+", group)]
     cited = list(dict.fromkeys([*in_text, *(c.strip("[] ") for c in citations)]))
     unknown = [label for label in cited if label not in labels]
     if unknown:
@@ -221,9 +270,10 @@ def verify(
                 "La respuesta mencionaba páginas que no corresponden a la evidencia citada.",
             )
     body = _PAGE_REF.sub(" ", body)
-    allowed = _numbers(question)
+    # De la pregunta solo se admiten años: una cifra de la premisa no se confirma sin evidencia.
+    allowed = {n for n in _numbers(question) if _YEAR.match(n)}
     for label in cited:
-        allowed |= _numbers(labels[label])
+        allowed |= _evidence_numbers(labels[label])
         allowed |= {f"20{year}" for year in _MONTH_YEAR.findall(labels[label])}
     unverified = sorted(_numbers(body) - allowed)
     if unverified:
@@ -261,7 +311,8 @@ def answer_question(
     if threshold is not None and similarities and max(similarities) < threshold:
         return Answer(
             "insufficient_evidence",
-            "La pregunta parece estar fuera del alcance de los informes indexados.",
+            "No se encontró evidencia suficientemente relacionada en los informes indexados; "
+            "la pregunta puede estar fuera de su alcance o requerir más precisión.",
             evidence=evidence,
             reason=f"Similitud máxima {max(similarities):.3f} < {threshold} ({embedding_model}).",
         )
@@ -273,7 +324,9 @@ def answer_question(
     texts = {
         label: " ".join(
             [hit.chunk.text if hit.chunk.evidence_quality != "unattributed_values" else "",
-             *(n.text for n in notes[label]), hit.report.title, hit.report.reference_period]
+             *(n.text for n in notes[label]),
+             # Del título y el periodo solo los años: «2025-10» no habilita la cifra «10».
+             *re.findall(r"(?:19|20)\d{2}", f"{hit.report.title} {hit.report.reference_period}")]
         )
         for label, hit in labels.items()
     }  # fmt: skip

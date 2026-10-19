@@ -45,6 +45,9 @@ from politica_monetaria_banrep_rag.retrieval import (
 from politica_monetaria_banrep_rag.source import BanrepSource, ReportSource, SourceError
 
 SOURCES = ("crossref", "historico")
+DISCLAIMER = (
+    "Proyecto no oficial: no representa al Banco de la República ni es asesoría financiera."
+)
 
 
 def _make_source(name: str) -> ReportSource:
@@ -594,9 +597,7 @@ def _print_answer(answer: Answer) -> None:
             f"  [{citation.label}] {citation.report_title} ({citation.reference_period}), "
             f"{pages} del PDF{printed}; {citation.evidence_quality}. {source}"
         )
-    print(
-        "\nProyecto no oficial: no representa al Banco de la República ni es asesoría financiera."
-    )
+    print(f"\n{DISCLAIMER}")
 
 
 def _query(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
@@ -615,7 +616,12 @@ def _query(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         detected: tuple[str, ...] = ()
         if not (filters.report_ids or filters.period_from or filters.period_to):
             periods = {r.reference_period: r.report_id for r in active.lexical.reports.values()}
-            detected = detect_reports(args.pregunta, periods)
+            detected, absent = detect_reports(args.pregunta, periods)
+            if absent:
+                print(
+                    f"Aviso: informes nombrados que no están indexados: {', '.join(absent)}.",
+                    file=sys.stderr,
+                )
             if detected:
                 filters = replace(filters, report_ids=detected)
                 print(
@@ -665,6 +671,7 @@ def _query(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             "question": args.pregunta,
             "detected_reports": list(detected),
             **asdict(answer),
+            "disclaimer": DISCLAIMER,
             "corpus": status,
         }
         print(json.dumps(payload, ensure_ascii=False, indent=2))

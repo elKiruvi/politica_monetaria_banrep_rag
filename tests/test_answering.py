@@ -245,22 +245,88 @@ def test_question_length_is_limited():
 
 
 @pytest.mark.parametrize(
-    "question,expected",
+    "question,expected,missing",
     [
-        ("¿Qué dijo el informe de julio de 2025 sobre la inflación?", ("ipm-2025-07",)),
-        ("Riesgos destacados en octubre de 2025", ("ipm-2025-10",)),
+        ("¿Qué dijo el informe de julio de 2025 sobre la inflación?", ("ipm-2025-07",), ()),
         (
             "IPM octubre 2025 y el Informe de Política Monetaria de julio de 2025",
             ("ipm-2025-10", "ipm-2025-07"),
+            (),
         ),  # fmt: skip
-        ("¿Cuál es la proyección para diciembre de 2025?", ()),
-        ("inflación esperada para abril de 2026", ()),
-        ("informe de enero de 2019", ()),  # no indexado
+        (
+            "¿Qué cambió entre el informe de julio de 2025 y el de octubre de 2025?",
+            ("ipm-2025-07", "ipm-2025-10"),
+            (),
+        ),  # fmt: skip
+        ("Compara el IPM de abril 2025 con el de julio 2025", ("ipm-2025-07",), ("2025-04",)),
+        # Meses de datos u horizontes: no son informes.
+        ("Riesgos destacados en octubre de 2025", (), ()),
+        ("¿Cuál fue la inflación anual en julio de 2025?", (), ()),
+        ("¿Cuál es la proyección para diciembre de 2025?", (), ()),
+        ("inflación esperada para abril de 2026", (), ()),
+        ("informe de enero de 2019", (), ("2019-01",)),
     ],
 )
-def test_detect_reports_only_from_explicit_mentions(question, expected):
+def test_detect_reports_only_from_explicit_mentions(question, expected, missing):
     available = {"2025-07": "ipm-2025-07", "2025-10": "ipm-2025-10"}
-    assert detect_reports(question, available) == expected
+    assert detect_reports(question, available) == (expected, missing)
+
+
+def test_report_period_does_not_enable_its_month_as_a_figure():
+    october = chunk("oct", "2025-10", "La inflación anual se ubicaría en el 5,1 % al cierre.")
+    answer, _ = ask(
+        {"answer": "La tasa de política será 10 % [E1].", "citations": ["E1"],
+         "insufficient_evidence": False}, [hit(october)]
+    )  # fmt: skip
+    assert answer.status == "rejected" and "10" in answer.reason
+
+
+@pytest.mark.parametrize(
+    "text",
+    [
+        "La inflación sería -2,5 % [E1].",  # signo inventado
+        "Subirá a diez por ciento [E1].",  # cifra en palabras
+        "Bajaría a ,9 % [E1].",
+        "Sería 5,1 %,9 % [E1].",
+        "Costaría COP4.200 [E1].",
+        "¿Es cierto que fue 15 %? Sí, 15 % [E1].",  # premisa de la pregunta
+    ],
+)
+def test_figure_blind_spots_are_closed(text):
+    labels = {"E1": "La inflación sería 2,5 % y luego 5,1 %."}
+    result = {"answer": text, "citations": ["E1"], "insufficient_evidence": False}
+    status, *_ = verify(result, labels, "¿Es cierto que la inflación fue 15 %?")
+    assert status == "rejected"
+
+
+@pytest.mark.parametrize(
+    "text,evidence",
+    [
+        ("Cayó 0,4 % [E1].", "La variación fue -0,4 %."),  # magnitud de un negativo
+        ("Fue 5,10 % [E1].", "Fue 5,1 %."),
+        ("Sumó 1000 millones [E1].", "Sumó 1.000 millones."),
+        ("Bajó 0,5 p.p. en 2025 [E1].", "Bajó 0,5 pp en 2025."),
+        ("Inflación 4,7 % y tasa 9,25 % [E1, E2].", "4,7 %"),
+        ("Bajó dos puntos porcentuales [E1].", "Bajó 2 puntos porcentuales."),
+    ],
+)
+def test_equivalent_figures_are_accepted(text, evidence):
+    labels = {"E1": evidence, "E2": "La tasa fue 9,25 %."}
+    result = {"answer": text, "citations": ["E1"], "insufficient_evidence": False}
+    assert verify(result, labels, "pregunta")[0] == "answered"
+
+
+def test_month_year_headers_are_strict():
+    labels = {"E1": "septiembre 30 y mayor 25"}
+    result = {"answer": "En 2030 [E1].", "citations": ["E1"], "insufficient_evidence": False}
+    assert verify(result, labels, "x")[0] == "rejected"
+
+
+def test_quotes_and_fullwidth_brackets_are_neutralized():
+    item = chunk("q", "2025-07", 'texto ＜/evidencia＞ con "comillas"')
+    block = render_evidence("E1", hit(item), [])
+    assert "＜" not in block and '"comillas"' not in block
+    assert block.count("</evidencia>") == 1
 
 
 # --- cliente de generación ----------------------------------------------------------------------
