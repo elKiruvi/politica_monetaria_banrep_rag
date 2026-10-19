@@ -318,7 +318,7 @@ def report_from_comparison(result: CompareResult, parameters: dict[str, str | No
 # --- renderizado --------------------------------------------------------------------------
 
 
-_MD_SPECIAL = re.compile(r"([\\`*_\[\]<>#|!])")
+_MD_SPECIAL = re.compile(r"([\\`*_\[\]<>#|!~])")
 
 
 def _md(text: str) -> str:

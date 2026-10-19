@@ -220,6 +220,7 @@ def test_citation_markers_cannot_become_links():
     linked = _md("bajó [E1](https://evil.example/x) según [E1].")
     assert "[E1](" not in linked and linked.endswith("según [E1].")
     assert _md("1. dato") == "1\\. dato" and _md("- dato") == "\\- dato"
+    assert _md("~~~ oculta") == "\\~\\~\\~ oculta"  # no abre un bloque de código
 
 
 def test_acquisition_is_unknown_when_it_cannot_be_deduced():
