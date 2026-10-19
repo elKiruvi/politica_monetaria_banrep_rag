@@ -14,14 +14,15 @@ from pathlib import Path
 from politica_monetaria_banrep_rag.layout import PARSER_VERSION, Block, PageLayout, extract_layout
 from politica_monetaria_banrep_rag.tables import Table, TableError, build_tables
 
-PROCESSING_VERSION = f"{PARSER_VERSION}+unidades-1"
+PROCESSING_VERSION = f"{PARSER_VERSION}+unidades-2"
 _EXCLUDED = {"toc", "running_header", "page_number", "chart_residue", "small_text"}
 _CHART_NOTE = "Los datos del gráfico no se extraen (fuera de alcance); solo su título y fuente."
+CRITICAL_SECTIONS = {"1": "Resumen", "2": "Pronósticos", "3": "Situación económica"}
 
 
 @dataclass(frozen=True)
 class Unit:
-    kind: str  # paragraph | table | table_raw | chart_caption | footnote
+    kind: str  # paragraph | table | table_raw | chart_caption | caption | source_note | footnote
     text: str
     page: int
     page_label: str | None
@@ -29,6 +30,23 @@ class Unit:
     table: Table | None = None
     page_end: int | None = None  # si el párrafo continúa en otra página
     page_end_label: str | None = None
+    evidence_quality: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        default = (
+            self.table.evidence_quality
+            if self.kind == "table" and self.table
+            else "unattributed_values"
+        )
+        quality = {
+            "paragraph": "narrative_only",
+            "footnote": "note_only",
+            "chart_caption": "caption_only",
+            "caption": "caption_only",
+            "table_raw": "unattributed_values",
+            "source_note": "note_only",
+        }.get(self.kind, default)
+        object.__setattr__(self, "evidence_quality", quality)
 
 
 @dataclass(frozen=True)
@@ -44,6 +62,7 @@ class QualityReport:
     ligatures_unresolved: int
     degraded: bool
     warnings: tuple[str, ...] = field(default_factory=tuple)
+    critical_sections: dict[str, dict[str, int | bool]] = field(default_factory=dict)
 
 
 @dataclass(frozen=True)
@@ -78,6 +97,41 @@ def quality_warnings(
     if total_tables and tables_failed > total_tables / 2:
         warnings.append("Más de la mitad de los cuadros no se pudieron reconstruir.")
     return tuple(warnings)
+
+
+def critical_section_coverage(units: tuple[Unit, ...]) -> dict[str, dict[str, int | bool]]:
+    """Cobertura textual por capítulo; un cuadro crudo no acredita cifras ni cubre el texto."""
+    coverage: dict[str, dict[str, int | bool]] = {
+        chapter: {
+            "text_units": 0,
+            "structured_tables": 0,
+            "raw_tables": 0,
+            "unattributed_tables": 0,
+            "charts": 0,
+            "covered": False,
+        }  # fmt: skip
+        for chapter in CRITICAL_SECTIONS
+    }
+    field = {"paragraph": "text_units", "table_raw": "raw_tables", "chart_caption": "charts"}
+    for unit in units:
+        if not unit.section:
+            continue
+        chapter = re.match(r"^([123])\.\s", unit.section[0])
+        if chapter is None or unit.kind not in (*field, "table"):
+            continue
+        entry = coverage[chapter[1]]
+        if unit.kind == "table":
+            key = (
+                "structured_tables"
+                if unit.evidence_quality == "structured_cells"
+                else "unattributed_tables"
+            )
+        else:
+            key = field[unit.kind]
+        entry[key] = int(entry[key]) + 1
+    for entry in coverage.values():
+        entry["covered"] = entry["text_units"] > 0
+    return coverage
 
 
 def _region_units(
@@ -220,7 +274,11 @@ def process_pdf(path: Path, report_id: str, sha256: str) -> ProcessedDocument:
                 continue
             section = tuple(title for _, title in stack)
             if block.kind in {"paragraph", "footnote", "caption", "source_note"}:
-                kind = "footnote" if block.kind == "footnote" else "paragraph"
+                kind = (
+                    block.kind
+                    if block.kind in {"footnote", "source_note", "caption"}
+                    else "paragraph"
+                )
                 previous = _last_paragraph(units, section)
                 if (
                     kind == "paragraph"
@@ -251,5 +309,6 @@ def process_pdf(path: Path, report_id: str, sha256: str) -> ProcessedDocument:
         ligatures_unresolved=layout.ligatures.unresolved,
         degraded=bool(warnings),
         warnings=warnings,
+        critical_sections=critical_section_coverage(tuple(units)),
     )
     return ProcessedDocument(report_id, sha256, PROCESSING_VERSION, tuple(units), quality)

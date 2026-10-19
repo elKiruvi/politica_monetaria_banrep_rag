@@ -28,13 +28,22 @@ from politica_monetaria_banrep_rag.processing import (
     ProcessedDocument,
     QualityReport,
     Unit,
+    critical_section_coverage,
     process_pdf,
     quality_warnings,
 )
 from politica_monetaria_banrep_rag.tables import Cell, Row, Table
 
 _SHA = re.compile(r"[0-9a-f]{64}")
-_UNIT_KINDS = {"paragraph", "table", "table_raw", "chart_caption", "footnote"}
+_UNIT_KINDS = {
+    "paragraph",
+    "table",
+    "table_raw",
+    "chart_caption",
+    "caption",
+    "source_note",
+    "footnote",
+}
 
 
 def _strings(value: object) -> tuple[str, ...]:
@@ -82,6 +91,8 @@ def _table(value: object) -> Table:
     )
     if any(len(row.values) != len(table.columns) for row in rows):
         raise ValueError("columnas de cuadro inválidas")
+    if value.get("evidence_quality") != table.evidence_quality:
+        raise ValueError("calidad de cuadro inconsistente")
     return table
 
 
@@ -114,6 +125,8 @@ def _replay_chunks(
             entry.get("page_end"),
             entry.get("page_end_label"),
         )
+        if entry.get("evidence_quality") != unit.evidence_quality:
+            raise ValueError("calidad de unidad inconsistente")
         if table is not None and (table.page != unit.page or table.to_text() != unit.text):
             raise ValueError("texto del cuadro no coincide con sus celdas")
         units.append(unit)
@@ -122,6 +135,8 @@ def _replay_chunks(
     replayed = ProcessedDocument(
         report_id, sha256, PROCESSING_VERSION, tuple(units), QualityReport(**quality)
     )
+    if quality.get("critical_sections") != critical_section_coverage(replayed.units):
+        raise ValueError("cobertura de secciones inconsistente")
     return [chunk.to_dict() for chunk in chunk_document(replayed, max_chars=max_chars)]
 
 

@@ -9,7 +9,7 @@ reconstruye: se conserva su texto sin atribuir cifras a columnas.
 
 import re
 import statistics
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from politica_monetaria_banrep_rag.layout import Line
 
@@ -17,6 +17,29 @@ _NUMBER = re.compile(
     r"^[-−–]?\d{1,3}(?:\.\d{3})*(?:,\d+)?\s*%?(?:\s?[a-z]/)*$|^n\.?\s?[ad]\.?$|^\.$|^-$|^…$"
 )
 _PROJECTION_NOTE = re.compile(r"negrilla.{0,40}proyecci", re.IGNORECASE | re.DOTALL)
+_MISSING_VALUE = re.compile(r"^n\.?\s*[ad]\.?$", re.I)
+_HORIZON = re.compile(
+    r"^(?:(?:19|20)\d{2}(?:\s*\((?:pr|proy)\)|\s+T[1-4])?|"
+    r"(?:IV|III|II|I)-(?:19|20)\d{2}|"
+    r"(?:ene|feb|mar|abr|may|jun|jul|ago|sep|sept|oct|nov|dic)[- ]\d{2})$",
+    re.I,
+)
+_EXPLICIT_UNIT = re.compile(
+    r"\((?:promedio mensual,\s*)?(porcentaje|puntos porcentuales|billones de pesos|"
+    r"miles de millones de pesos)\)",
+    re.I,
+)
+_ROW_UNIT = re.compile(
+    r"\b(pesos por dólar|dólares por barril|puntos porcentuales|porcentaje del PIB|"
+    r"miles de millones de (?:dólares|pesos)|millones de (?:dólares|pesos)|"
+    r"billones de pesos|porcentaje|pesos|dólares)\b(?=\s*(?:[,;.)]|$))|(?<!\w)%(?!\w)",
+    re.I,
+)
+_UNIT_HINT = re.compile(r"\b(puntos?|porcent\w*|billones|millones|pesos|dólares|índice)\b|%", re.I)
+
+
+def _attributable_value(text: str) -> bool:
+    return text not in {".", "-", "…"} and not _MISSING_VALUE.fullmatch(text)
 
 
 class TableError(Exception):
@@ -36,6 +59,29 @@ class Row:
     group: tuple[str, ...] = ()
 
 
+def _row_unit(row: Row, default: str | None) -> str | None:
+    for labels in (row.labels, row.group):
+        text = " ".join(labels)
+        explicit = _ROW_UNIT.search(text)
+        if explicit:
+            if re.search(r"\b(?:miles|millones|billones)\s+de\s*$", text[: explicit.start()], re.I):
+                return None  # Escala no reconocida: no atribuir solo el sufijo monetario.
+            return explicit[0].lower()
+        if _UNIT_HINT.search(text):
+            return None
+    return default
+
+
+@dataclass(frozen=True)
+class AttributedCell:
+    row: tuple[str, ...]
+    column: str
+    value: str
+    horizon: str | None
+    unit: str | None
+    projection_or_assumption: bool
+
+
 @dataclass(frozen=True)
 class Table:
     caption: str
@@ -47,6 +93,27 @@ class Table:
     notes: tuple[str, ...]
     bold_is_projection: bool
 
+    evidence_quality: str = field(init=False)
+
+    def __post_init__(self) -> None:
+        """La relación de columnas es estructural; no verifica las cifras contra el PDF."""
+        structured = (
+            bool(self.columns and self.rows and all(self.columns))
+            and len(set(self.columns)) == len(self.columns)
+            and all(
+                row.labels and any(row.labels) and len(row.values) == len(self.columns)
+                for row in self.rows
+            )
+            and any(
+                cell is not None and _attributable_value(cell.text)
+                for row in self.rows
+                for cell in row.values
+            )
+        )
+        object.__setattr__(
+            self, "evidence_quality", "structured_cells" if structured else "unattributed_values"
+        )
+
     def row_text(self, row: Row) -> str:
         """Una fila con cada cifra junto a su columna; marca proyecciones si la nota lo indica."""
         name = " > ".join((*row.group, *(label for label in row.labels if label)))
@@ -57,6 +124,25 @@ class Table:
             mark = " (proyección o supuesto)" if self.bold_is_projection and cell.bold else ""
             cells.append(f"{column}: {cell.text}{mark}")
         return f"{name} — " + "; ".join(cells) if cells else name
+
+    def attributed_cells(self, rows: tuple[Row, ...]) -> tuple[AttributedCell, ...]:
+        """Solo celdas de las filas que el fragmentador incluyó, nunca texto de notas."""
+        if self.evidence_quality != "structured_cells":
+            return ()
+        explicit = _EXPLICIT_UNIT.search(f"{self.caption} {self.context}")
+        return tuple(
+            AttributedCell(
+                (*row.group, *row.labels),
+                column,
+                cell.text,
+                column if _HORIZON.fullmatch(column) else None,
+                _row_unit(row, explicit[1].lower() if explicit else None),
+                self.bold_is_projection and cell.bold,
+            )
+            for row in rows
+            for column, cell in zip(self.columns, row.values, strict=True)
+            if cell is not None and _attributable_value(cell.text)
+        )
 
     def header_text(self) -> str:
         context = f" ({self.context})" if self.context else ""

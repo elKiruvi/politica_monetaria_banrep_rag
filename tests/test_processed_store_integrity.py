@@ -9,6 +9,7 @@ from importlib import metadata
 import pytest
 from pdf_factory import make_layout_pdf
 from test_importer import write
+from test_layout import annex_page, page_one, page_two
 
 from politica_monetaria_banrep_rag.catalog import Catalog
 from politica_monetaria_banrep_rag.chunking import CHUNKER_VERSION
@@ -29,6 +30,23 @@ def prepared(tmp_path):
     catalog.import_pdf(write(tmp_path))
     catalog.activate_imports()
     records = catalog.current()[1]["reports"]
+    store = ProcessedStore(root)
+    summaries, failures = store.ensure(records)
+    assert not failures and len(summaries) == 1
+    return store, records, summaries[0].path
+
+
+@pytest.fixture
+def prepared_evidence(tmp_path):
+    root = tmp_path / "data"
+    raw = root / "raw"
+    raw.mkdir(parents=True)
+    pdf = make_layout_pdf([page_one(), page_two(), annex_page()])
+    sha = hashlib.sha256(pdf).hexdigest()
+    source = raw / f"ipm-2025-01-{sha}.pdf"
+    source.write_bytes(pdf)
+    records = [{"report": {"report_id": "ipm-2025-01"},
+                "pdf": {"path": f"raw/{source.name}", "sha256": sha}}]  # fmt: skip
     store = ProcessedStore(root)
     summaries, failures = store.ensure(records)
     assert not failures and len(summaries) == 1
@@ -109,6 +127,44 @@ def test_reuse_versions_and_legacy_file_survives(prepared):
     assert changed.path_for("ipm-2025-01", records[0]["pdf"]["sha256"]) != target
     summaries, failures = changed.ensure(records)
     assert not failures and not summaries[0].cached and target.exists()
+
+
+@pytest.mark.parametrize("change", ["unit", "table", "chunk", "attributed_cells", "coverage"])
+def test_recalculated_checksum_cannot_promote_unattributed_evidence(prepared_evidence, change):
+    store, records, target = prepared_evidence
+    content = json.loads(target.read_text())
+    document = content["document"]
+    units = document["units"]
+    chunks = content["chunks"]
+    if change == "unit":
+        next(unit for unit in units if unit["kind"] == "paragraph")["evidence_quality"] = (
+            "structured_cells"
+        )
+    elif change == "table":
+        next(unit for unit in units if unit["kind"] == "table")["table"]["evidence_quality"] = (
+            "unattributed_values"
+        )
+    elif change == "chunk":
+        next(chunk for chunk in chunks if chunk["kind"] == "chart_caption")["evidence_quality"] = (
+            "structured_cells"
+        )
+    elif change == "attributed_cells":
+        next(chunk for chunk in chunks if chunk["kind"] == "chart_caption")["attributed_cells"] = [
+            {
+                "row": ["Invented"],
+                "column": "2026",
+                "value": "9,9",
+                "horizon": "2026",
+                "unit": "porcentaje",
+                "projection_or_assumption": False,
+            }
+        ]
+    else:
+        document["quality"]["critical_sections"]["2"]["covered"] = False
+    content["payload_sha256"] = _payload_digest(content)
+    target.write_text(json.dumps(content))
+    summaries, failures = store.ensure(records)
+    assert not failures and not summaries[0].cached
 
 
 @pytest.mark.parametrize("version", [1, 2])
