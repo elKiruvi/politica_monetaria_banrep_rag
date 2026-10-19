@@ -3,7 +3,8 @@ name: Docker
 # (503 sin índice), usuario no root y ausencia de PDF en la imagen. No usa Ollama ni datos reales.
 on:
   pull_request:
-    paths: ["Dockerfile", ".dockerignore", "compose.yaml", "pyproject.toml", "uv.lock", "src/**", ".github/workflows/docker.yml"]
+    paths: ["Dockerfile", ".dockerignore", "compose.yaml", "pyproject.toml", "uv.lock", "src/**",
+            "README.md", "LICENSE", ".env.example", ".github/workflows/docker.yml"]
   push:
     branches: [main]
   workflow_dispatch:
@@ -19,7 +20,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Validar Compose
-        run: docker compose config --quiet
+        run: |
+          docker compose config --quiet
+          for perfil in ollama ollama-gpu; do docker compose --env-file .env.example --profile "$perfil" config --quiet; done
       - name: Construir la imagen
         run: docker compose build
       - name: La imagen no contiene PDF ni datos
@@ -27,24 +30,31 @@ jobs:
           set -euo pipefail
           # PDF en toda la imagen; índices (.sqlite, .npy) fuera de las dependencias instaladas
           # (numpy incluye .npy de prueba en site-packages).
-          hallados=$(docker run --rm --entrypoint sh banrep-rag:local -c \
+          # Como root, para no saltarse directorios ilegibles para el usuario de la imagen.
+          hallados=$(docker run --rm --user 0 --entrypoint sh banrep-rag:local -c \
             'find / -xdev -name "*.pdf" 2>/dev/null; find / -xdev \( -name "*.sqlite" -o -name "*.npy" \) -not -path "*/site-packages/*" 2>/dev/null' | grep -v "^/proc" || true)
           if [ -n "$hallados" ]; then echo "$hallados"; exit 1; fi
           docker run --rm banrep-rag:local banrep-rag --help > /dev/null
+          # El código del proyecto no queda como fuente suelta: se instaló compilado en el entorno.
+          docker run --rm --entrypoint sh banrep-rag:local -c 'test ! -d /app/src && test ! -e /bin/uv && test ! -e /usr/local/bin/uv'
       - name: Usuario no root
         run: |
           uid=$(docker run --rm --entrypoint id banrep-rag:local -u)
           echo "uid=$uid"; test "$uid" != "0"
       - name: Arrancar con Compose sobre un catálogo vacío
         run: |
-          mkdir -p datos-vacios && chmod 777 datos-vacios
-          BANREP_DATOS=./datos-vacios docker compose up -d banrep-rag
+          # Mismo procedimiento que la documentación: catálogo propio y UID/GID de quien lo creó.
+          mkdir -p datos-vacios && chmod 700 datos-vacios
+          export BANREP_UID=$(id -u) BANREP_GID=$(id -g) BANREP_DATOS=./datos-vacios
+          docker compose up -d banrep-rag
           for i in $(seq 1 30); do
             estado=$(docker inspect --format '{{.State.Health.Status}}' "$(docker compose ps -q banrep-rag)")
             [ "$estado" = "healthy" ] && break
             sleep 3
           done
           echo "estado=$estado"; test "$estado" = "healthy"
+          # El contenedor puede escribir en el catálogo montado (modo 700 del equipo).
+          docker compose exec -T banrep-rag sh -c 'touch /datos/.escritura && rm /datos/.escritura'
       - name: Comprobar la API desde el equipo
         run: |
           set -euo pipefail

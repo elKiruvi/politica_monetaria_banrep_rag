@@ -92,11 +92,12 @@ El workflow «Detector de publicaciones» consulta Crossref dos veces por semana
 ## Docker (opcional)
 
 ```sh
+cp .env.example .env && mkdir -p data/catalogo   # ajustar BANREP_UID/BANREP_GID con id -u / id -g
 docker compose build
-BANREP_UID=$(id -u) BANREP_GID=$(id -g) docker compose up -d   # http://127.0.0.1:8000 con data/catalogo como volumen
+docker compose up -d                               # http://127.0.0.1:8000 con data/catalogo como volumen
 ```
 
-La imagen no incluye PDF ni datos, corre sin privilegios y publica el puerto solo en este equipo. Usa el Ollama instalado en el equipo, o uno en contenedor con `--profile ollama` (CPU) o `--profile ollama-gpu` (NVIDIA). `uv` sigue siendo la vía principal. Detalles en la [ADR 0014](docs/decisiones/0014-docker.md).
+La imagen no incluye PDF ni datos, corre sin privilegios y publica el puerto solo en este equipo. Puede usar un Ollama en contenedor con `--profile ollama` (CPU) o `--profile ollama-gpu` (NVIDIA). El Ollama del equipo también sirve, pero en Linux requiere que escuche en la IP del puente de Docker: no use `0.0.0.0`. `uv` sigue siendo la vía principal. Detalles en la [ADR 0014](docs/decisiones/0014-docker.md).
 
 ## Reportes descargables
 
