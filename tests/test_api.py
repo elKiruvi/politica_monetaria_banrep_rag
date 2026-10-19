@@ -269,3 +269,22 @@ def test_cli_prints_privacy_warning_even_when_query_fails(indexed, monkeypatch, 
     code, _, err = run_cli(monkeypatch, capsys, "buscar", "inflación", "--modo", "lexico",
                            "--data-dir", str(indexed))  # fmt: skip
     assert code == 0 and "saldrán del equipo" not in err  # la vía léxica no contacta a Ollama
+
+
+def test_compare_warnings_reach_the_api(tmp_path):
+    from test_comparison import CHUNKS, REPORTS
+
+    from politica_monetaria_banrep_rag.comparison import compare
+    from politica_monetaria_banrep_rag.service import CompareResult
+
+    comparison = compare(CHUNKS, REPORTS, ("ipm-2025-01", "ipm-2025-07"), "zzzz inexistente",
+                         explicit_indicator=True)  # fmt: skip
+
+    class Service(RagService):
+        def compare(self, **kwargs):
+            return CompareResult("f" * 64, comparison, {}, (), {}, ["aviso del servicio"])
+
+    app = create_app(Service(tmp_path), allowed_hosts=[*LOCAL_HOSTS, "testserver"])
+    body = TestClient(app).post("/api/v1/compare", json={"reports": ["2025-01", "2025-07"]}).json()
+    assert body["warnings"][0] == "aviso del servicio"
+    assert any("Ninguna fila coincide" in w for w in body["warnings"])

@@ -45,8 +45,8 @@
         <label for="pregunta">Pregunta</label>
         <textarea id="pregunta" name="question" rows="2" maxlength="500" required placeholder="¿Cuál fue la proyección de inflación para finales de 2025 según el informe de julio de 2025?"></textarea>
         <div class="row">
-          <label>Desde <input name="period_from" type="month" min="2000-01"></label>
-          <label>Hasta <input name="period_to" type="month" min="2000-01"></label>
+          <label>Desde <input name="period_from" type="month" min="2000-01" pattern="\d{4}-(0[1-9]|1[0-2])" placeholder="AAAA-MM"></label>
+          <label>Hasta <input name="period_to" type="month" min="2000-01" pattern="\d{4}-(0[1-9]|1[0-2])" placeholder="AAAA-MM"></label>
           <button type="submit">Preguntar</button>
         </div>
         <p class="hint">Sugerencias:

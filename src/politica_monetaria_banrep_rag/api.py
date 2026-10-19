@@ -268,10 +268,13 @@ def create_app(service: RagService, *, allowed_hosts: list[str] | None = None) -
             table=request.table,
             include_observed=request.include_observed,
         )
+        # Los avisos de la comparación (filas omitidas, sin coincidencias) se suman a los del
+        # servicio; antes la clave «warnings» los pisaba.
         return _json({"index_id": result.index_id, **asdict(result.comparison),
                       "missing_reports": list(result.missing_reports),
                       "table_notes": result.table_notes, "corpus": result.corpus,
-                      "warnings": result.warnings, "disclaimer": DISCLAIMER})  # fmt: skip
+                      "warnings": [*result.warnings, *result.comparison.warnings],
+                      "disclaimer": DISCLAIMER})  # fmt: skip
 
     @app.post(f"{prefix}/summarize")
     def summarize(request: SummarizeRequest) -> Response:

@@ -72,3 +72,19 @@ def test_javascript_syntax_is_valid():
 
 def test_assets_are_packaged_inside_the_module():
     assert WEB_DIR.is_relative_to(Path(__file__).parents[1] / "src")
+
+
+@pytest.mark.skipif(shutil.which("node") is None, reason="Node.js no disponible")
+def test_render_never_inserts_null_or_html_from_data():
+    script = Path(__file__).parent / "web_dom_check.mjs"
+    result = subprocess.run(
+        ["node", str(script), str(WEB_DIR / "app.js")], capture_output=True, text=True
+    )
+    assert result.returncode == 0 and result.stdout.strip() == "ok", result.stderr
+
+
+def test_forms_ignore_stale_responses_and_tabs_support_keyboard():
+    assert "current === sequence" in JS and "button.disabled = true" in JS
+    for key in ("ArrowRight", "ArrowLeft", "Home", "End"):
+        assert key in JS
+    assert 'placeholder="AAAA-MM"' in HTML

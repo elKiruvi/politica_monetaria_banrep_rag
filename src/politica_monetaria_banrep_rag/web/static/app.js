@@ -18,6 +18,11 @@ function el(tag, attrs = {}, ...children) {
   return node;
 }
 
+function fill(container, ...nodes) {
+  // replaceChildren convierte null en el texto «null»: se descartan los nodos vacíos.
+  container.replaceChildren(...nodes.filter((node) => node !== null && node !== undefined));
+}
+
 function safeUrl(url) {
   // Solo enlaces http(s) a fuentes; cualquier otro esquema se anula.
   try {
@@ -41,8 +46,16 @@ async function call(path, body) {
   } catch {
     data = { detail: "Respuesta no válida del servidor." };
   }
-  if (!response.ok) throw new Error(data.detail || `Error ${response.status}`);
+  if (!response.ok) {
+    const error = new Error(data.detail || `Error ${response.status}`);
+    error.warnings = data.warnings || [];
+    throw error;
+  }
   return data;
+}
+
+function clip(text, size) {
+  return text.length > size ? `${text.slice(0, size)}…` : text;
 }
 
 function pages(item) {
@@ -54,11 +67,12 @@ function pages(item) {
 }
 
 function busy(container, message) {
-  container.replaceChildren(el("p", { class: "busy", role: "status" }, message));
+  fill(container, el("p", { class: "busy", role: "status" }, message));
 }
 
 function showError(container, error) {
-  container.replaceChildren(el("p", { class: "error", role: "alert" }, error.message));
+  // Los avisos (p. ej., de privacidad) se muestran aunque la operación falle.
+  fill(container, warnings(error.warnings), el("p", { class: "error", role: "alert" }, error.message));
 }
 
 function warnings(list) {
@@ -85,7 +99,7 @@ const STATUS_TITLES = {
 function renderAnswer(container, data) {
   const shown = data.citations.length ? data.citations
     : (data.status !== "answered" ? data.evidence : []);
-  container.replaceChildren(
+  fill(container,
     warnings([...(data.warnings || []), ...((data.corpus && data.corpus.warnings) || [])]),
     el("h3", { class: `status-${data.status}` }, STATUS_TITLES[data.status] || data.status),
     el("p", { class: "answer" }, data.text),
@@ -112,7 +126,11 @@ function number(value, signed) {
 
 function renderComparison(container, data) {
   const blocks = [
-    warnings([...(data.warnings || []), ...(data.corpus.warnings || [])]),
+    warnings([
+      ...(data.warnings || []),
+      ...((data.missing_reports || []).length ? [`Informes no indexados: ${data.missing_reports.join(", ")}.`] : []),
+      ...(data.corpus.warnings || []),
+    ]),
     el("p", {}, `Indicador: «${data.indicator}»; filas buscadas con: ${(data.interpretation || []).join(" + ")}. Las cifras provienen de celdas atribuidas y las diferencias se calculan en Python.`),
   ];
   let table = null;
@@ -121,8 +139,9 @@ function renderComparison(container, data) {
       table = row.table;
       blocks.push(el("h3", {}, row.table));
     }
-    const cells = row.values.filter(Boolean).map((v) => el("li", {},
-      `${v.reference_period}: ${v.value_text} (${v.projection ? "proyección o supuesto" : "no marcada como proyección"}) — ${pages(v)}`));
+    const cells = row.values.map((v, i) => v
+      ? el("li", {}, `${v.reference_period}: ${v.value_text} (${v.projection ? "proyección o supuesto" : "no marcada como proyección"}) — ${pages(v)}`)
+      : el("li", { class: "note" }, `${(data.reports[i] || {}).reference_period || "Informe"}: sin dato en este cuadro.`));
     const diffs = row.differences.map((d) => el("li", { class: "difference" },
       `${d.from_report} → ${d.to_report}: ${number(d.value, true)} ${row.difference_unit} (${KINDS[d.kind] || d.kind})`));
     blocks.push(el("article", { class: "comparison" },
@@ -134,7 +153,7 @@ function renderComparison(container, data) {
   }
   if (data.truncated) blocks.push(el("p", { class: "reason" }, "Se muestran las primeras filas; precise el horizonte."));
   blocks.push(el("p", { class: "disclaimer" }, data.disclaimer));
-  container.replaceChildren(...blocks);
+  fill(container, ...blocks);
 }
 
 function renderSearch(container, data) {
@@ -143,9 +162,9 @@ function renderSearch(container, data) {
     el("p", { class: "meta" }, `Sección: ${r.section.join(" > ") || "(sin sección)"} · tipo: ${r.kind} · calidad: ${r.evidence_quality} · celdas atribuibles: ${r.attributed_cells.length}`),
     el("p", { class: "excerpt" }, r.text.length > 700 ? `${r.text.slice(0, 700)}…` : r.text),
     r.kind === "table_raw" ? el("p", { class: "note" }, "Cuadro sin estructura verificable: sus cifras no están atribuidas.") : null,
-    r.table_notes.length ? el("p", { class: "note" }, `Notas del cuadro: ${r.table_notes[0].slice(0, 300)}…`) : null,
+    r.table_notes.length ? el("p", { class: "note" }, `Notas del cuadro: ${clip(r.table_notes[0], 300)}`) : null,
   ));
-  container.replaceChildren(
+  fill(container,
     warnings([...(data.warnings || []), ...(data.corpus.warnings || [])]),
     el("p", {}, `Modo: ${data.mode}.`),
     ...(items.length ? items : [el("p", {}, "Sin resultados para esa consulta.")]),
@@ -192,35 +211,60 @@ function monthValue(input) {
 }
 
 function setupTabs() {
-  const buttons = document.querySelectorAll('[role="tab"]');
-  for (const button of buttons) {
-    button.addEventListener("click", () => {
-      for (const other of buttons) {
-        const selected = other === button;
-        other.setAttribute("aria-selected", String(selected));
-        document.getElementById(other.getAttribute("aria-controls")).hidden = !selected;
-      }
+  // Patrón de pestañas de ARIA: una sola en el orden de tabulación; flechas, Inicio y Fin.
+  const buttons = Array.from(document.querySelectorAll('[role="tab"]'));
+  const select = (button) => {
+    for (const other of buttons) {
+      const selected = other === button;
+      other.setAttribute("aria-selected", String(selected));
+      other.tabIndex = selected ? 0 : -1;
+      document.getElementById(other.getAttribute("aria-controls")).hidden = !selected;
+    }
+    button.focus();
+  };
+  buttons.forEach((button, index) => {
+    button.tabIndex = index === 0 ? 0 : -1;
+    button.addEventListener("click", () => select(button));
+    button.addEventListener("keydown", (event) => {
+      const moves = { ArrowRight: index + 1, ArrowLeft: index - 1, Home: 0, End: buttons.length - 1 };
+      if (!(event.key in moves)) return;
+      event.preventDefault();
+      select(buttons[(moves[event.key] + buttons.length) % buttons.length]);
     });
-  }
+  });
+}
+
+function submitter(form, out, message, request, render) {
+  // Una solicitud a la vez por formulario; una respuesta obsoleta nunca reemplaza a otra.
+  let sequence = 0;
+  form.addEventListener("submit", async (event) => {
+    event.preventDefault();
+    const current = ++sequence;
+    const button = form.querySelector('button[type="submit"]');
+    button.disabled = true;
+    busy(out, message);
+    try {
+      const data = await request();
+      if (current === sequence) render(out, data);
+    } catch (error) {
+      if (current === sequence) showError(out, error);
+    } finally {
+      if (current === sequence) button.disabled = false;
+    }
+  });
 }
 
 function setupForms() {
   const ask = document.getElementById("form-preguntar");
-  ask.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const out = document.getElementById("resultado-preguntar");
-    const filters = {};
-    const from = monthValue(ask.elements.period_from);
-    const to = monthValue(ask.elements.period_to);
-    if (from) filters.period_from = from;
-    if (to) filters.period_to = to;
-    busy(out, "Recuperando evidencia y redactando con el modelo local… (puede tardar)");
-    try {
-      renderAnswer(out, await call("/query", { question: ask.elements.question.value, filters }));
-    } catch (error) {
-      showError(out, error);
-    }
-  });
+  submitter(ask, document.getElementById("resultado-preguntar"),
+    "Recuperando evidencia y redactando con el modelo local… (puede tardar)", () => {
+      const filters = {};
+      const from = monthValue(ask.elements.period_from);
+      const to = monthValue(ask.elements.period_to);
+      if (from) filters.period_from = from;
+      if (to) filters.period_to = to;
+      return call("/query", { question: ask.elements.question.value, filters });
+    }, renderAnswer);
   for (const suggestion of document.querySelectorAll(".suggestion")) {
     suggestion.addEventListener("click", () => {
       ask.elements.question.value = suggestion.textContent;
@@ -229,55 +273,31 @@ function setupForms() {
   }
 
   const compareForm = document.getElementById("form-comparar");
-  compareForm.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const out = document.getElementById("resultado-comparar");
-    const f = compareForm.elements;
-    const body = {
-      question: f.question.value || null,
-      reports: Array.from(f.reports.selectedOptions).map((o) => o.value),
-      indicator: f.indicator.value || null,
-      horizon: f.horizon.value || null,
-      include_observed: f.include_observed.checked,
-    };
-    busy(out, "Comparando celdas atribuidas…");
-    try {
-      renderComparison(out, await call("/compare", body));
-    } catch (error) {
-      showError(out, error);
-    }
-  });
+  submitter(compareForm, document.getElementById("resultado-comparar"),
+    "Comparando celdas atribuidas…", () => {
+      const f = compareForm.elements;
+      return call("/compare", {
+        question: f.question.value || null,
+        reports: Array.from(f.reports.selectedOptions).map((o) => o.value),
+        indicator: f.indicator.value || null,
+        horizon: f.horizon.value || null,
+        include_observed: f.include_observed.checked,
+      });
+    }, renderComparison);
 
   const summary = document.getElementById("form-resumir");
-  summary.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const out = document.getElementById("resultado-resumir");
-    busy(out, "Resumiendo con el modelo local… (puede tardar)");
-    try {
-      const data = await call("/summarize", {
-        report: summary.elements.report.value,
-        topic: summary.elements.topic.value || null,
-      });
-      renderAnswer(out, data);
-    } catch (error) {
-      showError(out, error);
-    }
-  });
+  submitter(summary, document.getElementById("resultado-resumir"),
+    "Resumiendo con el modelo local… (puede tardar)", () => call("/summarize", {
+      report: summary.elements.report.value,
+      topic: summary.elements.topic.value || null,
+    }), renderAnswer);
 
   const search = document.getElementById("form-buscar");
-  search.addEventListener("submit", async (event) => {
-    event.preventDefault();
-    const out = document.getElementById("resultado-buscar");
-    busy(out, "Buscando…");
-    try {
-      renderSearch(out, await call("/search", {
-        query: search.elements.query.value,
-        top_k: Number(search.elements.top_k.value) || 5,
-      }));
-    } catch (error) {
-      showError(out, error);
-    }
-  });
+  submitter(search, document.getElementById("resultado-buscar"), "Buscando…", () =>
+    call("/search", {
+      query: search.elements.query.value,
+      top_k: Number(search.elements.top_k.value) || 5,
+    }), renderSearch);
 }
 
 document.addEventListener("DOMContentLoaded", () => {
