@@ -220,18 +220,30 @@ class SearchFilters:
 
 @dataclass(frozen=True)
 class RetrievalHit:
-    """Un fragmento recuperado con su informe; ``lexical_bm25`` sigue la convención de FTS5
-    (más negativo = más relevante) y solo sirve para ordenar dentro de una misma consulta."""
+    """Un fragmento recuperado con su informe y las señales de cada vía.
+
+    ``lexical_bm25`` sigue la convención de FTS5 (más negativo = más relevante);
+    ``semantic_similarity`` es el coseno con la consulta. Ninguna se compara con la otra: la
+    fusión usa solo las posiciones (``lexical_rank``, ``semantic_rank``) en ``fused_score``.
+    """
 
     rank: int
     chunk: IndexedChunk
     report: ReportMeta
     lexical_bm25: float | None = None
+    semantic_similarity: float | None = None
+    lexical_rank: int | None = None
+    semantic_rank: int | None = None
+    fused_score: float | None = None
 
     def to_dict(self) -> dict[str, object]:
         return {
             "rank": self.rank,
             "lexical_bm25": self.lexical_bm25,
+            "semantic_similarity": self.semantic_similarity,
+            "lexical_rank": self.lexical_rank,
+            "semantic_rank": self.semantic_rank,
+            "fused_score": self.fused_score,
             **self.chunk.to_dict(),
             "report": self.report.to_dict(),
         }

@@ -12,6 +12,13 @@ from politica_monetaria_banrep_rag.catalog import Catalog, CatalogError
 from politica_monetaria_banrep_rag.corpus import CorpusError, load_corpus
 from politica_monetaria_banrep_rag.crossref import CrossrefReportSource
 from politica_monetaria_banrep_rag.download import DownloadError, PdfDownloader
+from politica_monetaria_banrep_rag.embeddings import (
+    DEFAULT_EMBEDDING_MODEL,
+    DEFAULT_OLLAMA_URL,
+    EmbeddingError,
+    OllamaEmbeddings,
+    is_local_url,
+)
 from politica_monetaria_banrep_rag.evaluation import evaluate, load_queries, unresolved
 from politica_monetaria_banrep_rag.importer import ImportFileError
 from politica_monetaria_banrep_rag.index_store import (
@@ -289,9 +296,46 @@ def _index_status(root: Path, active: ActiveIndex) -> dict[str, object]:
     return corpus_status(active.manifest, current[0] if current else None, verification)
 
 
+SEARCH_MODES = ("auto", "lexico", "semantico", "hibrido")
+
+
+def _ollama(model: str) -> OllamaEmbeddings:
+    url = os.getenv("BANREP_OLLAMA_URL") or DEFAULT_OLLAMA_URL
+    if not is_local_url(url):
+        print(
+            f"Aviso: Ollama no es local ({url}); los fragmentos y las consultas saldrán "
+            "del equipo.",
+            file=sys.stderr,
+        )
+    return OllamaEmbeddings(model, base_url=url)
+
+
+def _resolve_mode(active: ActiveIndex, mode: str) -> str:
+    """``auto``: híbrida si el índice tiene vectores; si no, léxica."""
+    if mode != "auto":
+        return mode
+    return "hibrido" if active.embedding is not None else "lexico"
+
+
+def _embedder_for(active: ActiveIndex, mode: str) -> OllamaEmbeddings | None:
+    """Proveedor con el que se construyó el índice; solo si la vía lo necesita."""
+    if mode == "lexico":
+        return None
+    embedding = active.embedding
+    if embedding is None:
+        raise IndexStoreError(
+            "El índice activo no tiene vectores; ejecute «banrep-rag indexar "
+            "--modelo-embeddings <modelo>»."
+        )
+    if embedding["provider"] != "ollama":
+        raise IndexStoreError(f"Proveedor de embeddings no soportado: {embedding['provider']}.")
+    return _ollama(str(embedding["model"]))
+
+
 def _index(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     root = _data_dir(args)
     manager = IndexManager(root)
+    embedder = None
     try:
         if args.revertir:
             index_id = manager.rollback()
@@ -305,13 +349,36 @@ def _index(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                 current = catalog.current()
                 return current[0] if current else None
 
-            result = manager.build(lambda: load_corpus(catalog, store), snapshot, force=args.forzar)
+            model = (
+                args.modelo_embeddings
+                or os.getenv("BANREP_EMBEDDING_MODEL")
+                or DEFAULT_EMBEDDING_MODEL
+            )
+            embedder = None if args.sin_embeddings else _ollama(model)
+            result = manager.build(
+                lambda: load_corpus(catalog, store),
+                snapshot,
+                force=args.forzar,
+                embedder=embedder,
+                progress=lambda text: print(text, file=sys.stderr),
+            )
+    except EmbeddingError as exc:
+        parser.exit(
+            1,
+            f"Error de indexación: {exc}\nEl índice activo anterior no cambió. Para indexar sin "
+            "Ollama (solo búsqueda léxica) use «--sin-embeddings».\n",
+        )
     except (CorpusError, IndexStoreError, CatalogError) as exc:
         parser.exit(1, f"Error de indexación: {exc}\nEl índice activo anterior no cambió.\n")
     except OSError as exc:
         parser.exit(
             1, f"Error de indexación: {_local_failure(exc)}\nEl índice activo anterior no cambió.\n"
         )
+    except ValueError as exc:
+        parser.exit(2, f"Error: {exc}\n")
+    finally:
+        if embedder is not None:
+            embedder.close()
     manifest = result.manifest
     if args.json:
         print(json.dumps({"index_id": result.index_id, "created": result.created, **manifest},
@@ -324,6 +391,11 @@ def _index(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         f"{verb} {result.index_id[:12]} — {manifest['chunk_count']} fragmentos de "
         f"{len(reports)} informes (snapshot {str(manifest['catalog_snapshot'])[:12]})."
     )
+    vector = manifest.get("vector")
+    if isinstance(vector, dict):
+        print(f"Vectores: {vector['model']} ({vector['dimension']} dimensiones, FAISS exacto).")
+    else:
+        print("Sin vectores: solo búsqueda léxica (use --modelo-embeddings para la semántica).")
     if manifest["selection_mode"] == "local_import":
         print("Aviso: corpus de importación local; no equivale a los últimos informes publicados.")
 
@@ -358,6 +430,17 @@ def _validate_index(parser: argparse.ArgumentParser, args: argparse.Namespace) -
         parser.exit(3, "")
 
 
+def _signal(hit: RetrievalHit) -> str:
+    parts = []
+    if hit.fused_score is not None:
+        parts.append(f"RRF {hit.fused_score:.4f}")
+    if hit.lexical_rank is not None:
+        parts.append(f"BM25 {hit.lexical_bm25:.3f} (n.º {hit.lexical_rank})")
+    if hit.semantic_rank is not None:
+        parts.append(f"similitud {hit.semantic_similarity:.3f} (n.º {hit.semantic_rank})")
+    return " · ".join(parts)
+
+
 def _print_hit(hit: RetrievalHit, notes: list[str]) -> None:
     chunk, report = hit.chunk, hit.report
     pages = (
@@ -372,7 +455,7 @@ def _print_hit(hit: RetrievalHit, notes: list[str]) -> None:
     print(f"   Sección: {' > '.join(chunk.section) or '(sin sección)'}")
     print(
         f"   Tipo: {_KIND_LABELS.get(chunk.kind, chunk.kind)} · calidad: {chunk.evidence_quality}"
-        f" · celdas atribuibles: {len(chunk.attributed_cells)} · BM25 {hit.lexical_bm25:.3f}"
+        f" · celdas atribuibles: {len(chunk.attributed_cells)} · {_signal(hit)}"
     )
     excerpt = " ".join(chunk.text.split())
     print(f"   {excerpt[:400]}{'…' if len(excerpt) > 400 else ''}")
@@ -404,8 +487,11 @@ def _search(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         active = IndexManager(root).open_active()
     except IndexStoreError as exc:
         parser.exit(1, f"Error de búsqueda: {exc}\n")
+    embedder = None
     try:
-        hits = active.search(args.consulta, filters, top_k=args.top_k)
+        mode = _resolve_mode(active, args.modo)
+        embedder = _embedder_for(active, mode)
+        hits = active.search(args.consulta, filters, top_k=args.top_k, mode=mode, embedder=embedder)
         notes = {
             hit.chunk.chunk_id: [note.text for note in active.table_notes(hit.chunk)]
             for hit in hits
@@ -413,13 +499,15 @@ def _search(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         status = _index_status(root, active)
     except ValueError as exc:
         parser.exit(2, f"Error: {exc}\n")
-    except CatalogError as exc:
+    except (CatalogError, IndexStoreError, EmbeddingError) as exc:
         parser.exit(1, f"Error de búsqueda: {exc}\n")
     finally:
         active.close()
+        if embedder is not None:
+            embedder.close()
     if args.json:
         rows = [{**hit.to_dict(), "table_notes": notes[hit.chunk.chunk_id]} for hit in hits]
-        payload = {"index_id": active.index_id, "mode": args.modo, "query": args.consulta,
+        payload = {"index_id": active.index_id, "mode": mode, "query": args.consulta,
                    "results": rows, "corpus": status}  # fmt: skip
         print(json.dumps(payload, ensure_ascii=False, indent=2))
         return
@@ -427,6 +515,7 @@ def _search(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     assert isinstance(warnings, list)
     for warning in warnings:
         print(f"Aviso: {warning}")
+    print(f"Modo: {mode}.")
     if not hits:
         print("Sin resultados en el índice activo para esa consulta y esos filtros.")
         return
@@ -443,7 +532,10 @@ def _evaluate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
         active = IndexManager(_data_dir(args)).open_active()
     except IndexStoreError as exc:
         parser.exit(1, f"Error de evaluación: {exc}\n")
+    embedder = None
     try:
+        mode = _resolve_mode(active, args.modo)
+        embedder = _embedder_for(active, mode)
         chunks = active.lexical.all_chunks()
         problems = unresolved(queries, chunks)
         if problems:
@@ -453,19 +545,25 @@ def _evaluate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
                 "procesamiento): " + "; ".join(problems) + "\n",
             )
         result = evaluate(
-            lambda text, filters, k: active.search(text, filters, top_k=k),
+            lambda text, filters, k: active.search(
+                text, filters, top_k=k, mode=mode, embedder=embedder
+            ),
             queries,
             indexed_reports={chunk.report_id for chunk in chunks},
             k=args.k,
         )
+    except (IndexStoreError, EmbeddingError) as exc:
+        parser.exit(1, f"Error de evaluación: {exc}\n")
     finally:
         active.close()
-    result = {"index_id": active.index_id, "mode": args.modo, **result}
+        if embedder is not None:
+            embedder.close()
+    result = {"index_id": active.index_id, "mode": mode, **result}
     if args.json:
         print(json.dumps(result, ensure_ascii=False, indent=2))
         return
     print(
-        f"Evaluación {args.modo} en el índice {active.index_id[:12]}: {result['answerable']} "
+        f"Evaluación {mode} en el índice {active.index_id[:12]}: {result['answerable']} "
         f"consultas con respuesta y {int(str(result['queries'])) - int(str(result['answerable']))}"
         f" sin respuesta; k={args.k}."
     )
@@ -578,12 +676,24 @@ def main() -> None:
     index_cmd.add_argument(
         "--revertir", action="store_true", help="Reactiva el índice anterior conservado"
     )
+    index_cmd.add_argument(
+        "--modelo-embeddings",
+        metavar="MODELO",
+        help="Modelo de Ollama para la vía semántica (o BANREP_EMBEDDING_MODEL; "
+        f"por defecto {DEFAULT_EMBEDDING_MODEL})",
+    )
+    index_cmd.add_argument(
+        "--sin-embeddings", action="store_true", help="Construye solo el índice léxico (sin Ollama)"
+    )
     index_cmd.add_argument("--json", action="store_true", help="Emite el manifiesto en JSON")
     search_cmd = subcommands.add_parser("buscar", help="Busca fragmentos citables en el índice")
     search_cmd.add_argument("consulta", help="Texto de la consulta")
     search_cmd.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
     search_cmd.add_argument(
-        "--modo", choices=("lexico",), default="lexico", help="Vía de recuperación"
+        "--modo",
+        choices=SEARCH_MODES,
+        default="auto",
+        help="Vía de recuperación (auto: híbrida si el índice tiene vectores)",
     )
     search_cmd.add_argument(
         "--top-k", type=int, default=5, choices=range(1, 51), metavar="K",
@@ -612,7 +722,7 @@ def main() -> None:
     evaluate_cmd.add_argument(
         "--k", type=int, default=5, choices=range(1, 51), metavar="K", help="Corte (por defecto 5)"
     )
-    evaluate_cmd.add_argument("--modo", choices=("lexico",), default="lexico")
+    evaluate_cmd.add_argument("--modo", choices=SEARCH_MODES, default="auto")
     evaluate_cmd.add_argument("--json", action="store_true", help="Emite el informe en JSON")
     args = parser.parse_args()
     handler = {

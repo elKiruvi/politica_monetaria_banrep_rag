@@ -337,9 +337,9 @@ def test_cli_index_search_and_validate_end_to_end(catalog_root, monkeypatch, cap
     data = str(catalog_root)
     code, out, err = run_cli(monkeypatch, capsys, "buscar", "inflación", "--data-dir", data)
     assert code == 1 and "indexar" in err
-    code, out, _ = run_cli(monkeypatch, capsys, "indexar", "--data-dir", data)
+    code, out, _ = run_cli(monkeypatch, capsys, "indexar", "--sin-embeddings", "--data-dir", data)
     assert code == 0 and "Índice creado y activado" in out and "importación local" in out
-    code, out, _ = run_cli(monkeypatch, capsys, "indexar", "--data-dir", data)
+    code, out, _ = run_cli(monkeypatch, capsys, "indexar", "--sin-embeddings", "--data-dir", data)
     assert "Sin cambios" in out
     code, out, _ = run_cli(
         monkeypatch, capsys, "buscar", "inflacion basica 3,5 %", "--modo", "lexico",
@@ -365,11 +365,13 @@ def test_cli_index_search_and_validate_end_to_end(catalog_root, monkeypatch, cap
 
 def test_cli_validate_reports_stale_index_and_rollback(catalog_root, monkeypatch, capsys):
     data = str(catalog_root)
-    run_cli(monkeypatch, capsys, "indexar", "--data-dir", data)
+    run_cli(monkeypatch, capsys, "indexar", "--sin-embeddings", "--data-dir", data)
     first = IndexManager(catalog_root).active_id()
-    run_cli(monkeypatch, capsys, "indexar", "--forzar", "--data-dir", data)
+    run_cli(monkeypatch, capsys, "indexar", "--sin-embeddings", "--forzar", "--data-dir", data)
     assert IndexManager(catalog_root).active_id() != first
-    code, out, _ = run_cli(monkeypatch, capsys, "indexar", "--revertir", "--data-dir", data)
+    code, out, _ = run_cli(
+        monkeypatch, capsys, "indexar", "--sin-embeddings", "--revertir", "--data-dir", data
+    )
     assert code == 0 and first[:12] in out
     pointer = catalog_root / "current.json"
     active = json.loads(pointer.read_text())
@@ -380,10 +382,12 @@ def test_cli_validate_reports_stale_index_and_rollback(catalog_root, monkeypatch
 
 def test_cli_index_failure_reports_previous_index_kept(catalog_root, monkeypatch, capsys):
     data = str(catalog_root)
-    run_cli(monkeypatch, capsys, "indexar", "--data-dir", data)
+    run_cli(monkeypatch, capsys, "indexar", "--sin-embeddings", "--data-dir", data)
     for path in (catalog_root / "processed").iterdir():
         path.write_text("{}")
-    code, _, err = run_cli(monkeypatch, capsys, "indexar", "--forzar", "--data-dir", data)
+    code, _, err = run_cli(
+        monkeypatch, capsys, "indexar", "--sin-embeddings", "--forzar", "--data-dir", data
+    )
     assert code == 1 and "no cambió" in err and "procesar" in err
 
 
@@ -391,7 +395,7 @@ def test_cli_evaluate_reports_metrics_and_rejects_unresolved_judgments(
     catalog_root, monkeypatch, capsys, tmp_path
 ):
     data = str(catalog_root)
-    run_cli(monkeypatch, capsys, "indexar", "--data-dir", data)
+    run_cli(monkeypatch, capsys, "indexar", "--sin-embeddings", "--data-dir", data)
     queries = tmp_path / "consultas.json"
     judgment = {"report_id": "ipm-2025-01", "pages": [3], "contains": "precio del petróleo",
                 "grade": 2}  # fmt: skip
