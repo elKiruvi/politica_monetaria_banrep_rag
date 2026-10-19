@@ -1,6 +1,6 @@
 # Estado del desarrollo — checkpoint F6
 
-**Actualizado:** 19 de octubre de 2026. H1–H5 fusionadas (#27–#31 cerrados). **F5 cerrada** (#6): PR #37 y #38, `main` `763b655`, CI post-merge aprobado (run 39202051557). **Fase en curso:** F6 (#7), rama `feat/grounded-answers` (F6A: respuestas verificadas).
+**Actualizado:** 19 de octubre de 2026. H1–H5 fusionadas (#27–#31 cerrados). **F5 cerrada** (#6): PR #37 y #38, `main` `763b655`, CI post-merge aprobado (run 39202051557). **Fase en curso:** F6 (#7), F6A fusionada (PR #39, `main` `7132934`, CI post-merge aprobado); F6B en `feat/report-comparisons`.
 
 ## Resumen por fase
 
@@ -13,7 +13,7 @@
 | Sprint de acceso | #18 | falta N=12 real y repetición | tabla del issue |
 | F4 Procesamiento | #5 | **completada**; H1–H5 fusionadas (PR #32–#36) | ADR 0006 |
 | F5 Indexación y recuperación | #6 | **cerrada**: FTS5, FAISS, RRF híbrida, manifiesto, reversión, evaluación | ADR 0007, 0008 |
-| F6 Generación y comparación | #7 | **F6A en curso**: `consultar` con Qwen, citas y verificación de cifras; F6B (comparaciones y resúmenes) pendiente | ADR 0009 |
+| F6 Generación y comparación | #7 | `consultar` con Qwen verificado (F6A); `comparar` determinista y `resumir` (F6B) | ADR 0009, 0010 |
 | F7–F10 | #8–#11 | pendientes | — |
 
 ## Qué funciona hoy (comandos reales)
@@ -22,6 +22,7 @@
 - `procesar`: cinco PDF importados → 1 566 fragmentos (304, 304, 303, 311 y 344; `max_chars=1400`), cuadros con calidad por unidad; enero de 2025 degradado.
 - `indexar`, `buscar`, `validar-indice`, `evaluar`: índice léxico en < 1 s y vectores `embeddinggemma` en ~80 s (GPU). Nivel evidencia, k=5: léxica MRR 0,562; híbrida 0,687, R@5 0,714 (ADR 0007, 0008).
 - `consultar`: respuestas con Qwen verificadas; 13/14 respondidas, abstención 3/3, p50 3 s (ADR 0009).
+- `comparar` y `resumir`: IPC total 2025, enero → julio de 2025: 4,05 % → 4,7 % (+0,65 pp, revisión de proyección) (ADR 0010).
 
 ## Evidencia de acceso (16-10-2026)
 
@@ -42,7 +43,7 @@
 
 ## Pendiente y riesgos conocidos
 
-1. **F6B:** comparaciones entre informes calculadas en Python desde celdas atribuidas (mismo indicador, horizonte y unidad) y resúmenes trazables; después F7 (API, web, reportes). Reranker diferido a F9.
+1. **F7:** API FastAPI, interfaz web y reportes descargables sobre `consultar`, `comparar` y `resumir` (#8). Reranker diferido a F9.
 2. **F3/#4, #18:** sincronización real N=12 y repetición sin descargas.
 3. F4: enero de 2025 degradado (8 cuadros como `table_raw`); heurísticas ajustadas a 2025–2026; informes 2023–2024 sin validar.
 4. Windows no probado; acciones fijadas por etiqueta (revisar en F9).
@@ -55,4 +56,4 @@ uv sync --frozen && uv run --frozen pytest -q
 uv run --frozen banrep-rag estado --data-dir data/catalogo
 uv run --frozen banrep-rag indexar --data-dir data/catalogo && uv run --frozen banrep-rag evaluar --data-dir data/catalogo
 ```
-Leer `CLAUDE.md` y las ADR 0001–0009; continuar con F6B en una rama nueva desde `main`.
+Leer `CLAUDE.md` y las ADR 0001–0010; continuar con F7 en una rama nueva desde `main`.

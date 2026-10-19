@@ -69,6 +69,17 @@ uv run --frozen banrep-rag consultar "¿Qué dijo el Banco sobre el precio del p
 
 La respuesta se redacta con Qwen local usando solo los fragmentos recuperados y se **verifica** antes de mostrarse: las citas deben existir y cada cifra debe figurar en la evidencia citada; si no, se muestra que fue rechazada junto con la evidencia revisada. Si la pregunta está fuera del alcance de los informes o la evidencia no basta, el sistema se abstiene. Un informe nombrado en la pregunta («informe de julio de 2025») restringe la búsqueda a ese informe. Límites y mediciones en la [ADR 0009](docs/decisiones/0009-respuestas-fundamentadas.md). Las respuestas no son asesoría financiera ni comunicaciones del Banco.
 
+## Comparaciones y resúmenes
+
+```sh
+uv run --frozen banrep-rag comparar "¿Cómo cambiaron las proyecciones de inflación entre enero y julio de 2025?"
+uv run --frozen banrep-rag comparar --informe 2025-10 --informe 2026-01 --indicador "producto interno bruto" --horizonte 2026
+uv run --frozen banrep-rag resumir 2025-10
+uv run --frozen banrep-rag resumir 2026-01 --tema "mercado laboral"
+```
+
+`comparar` no usa el modelo de lenguaje: toma solo celdas atribuidas de los cuadros, compara únicamente el mismo cuadro, fila, horizonte y unidad, calcula las diferencias en Python (en puntos porcentuales cuando la unidad es porcentual), distingue revisiones de proyección y datos observados, advierte diferencias de redondeo y cita cada valor con su página. `resumir` redacta con Qwen y verifica las cifras contra la evidencia del informe. Detalles en la [ADR 0010](docs/decisiones/0010-comparaciones-y-resumenes.md).
+
 El diagnóstico de investigación, incluido el bloqueo de las consultas paginadas a la fuente, está en [docs/arquitectura/diagnostico_inicial.md](docs/arquitectura/diagnostico_inicial.md). Las entregas pendientes se describen en los issues. No se exige ningún proveedor comercial para instalar la base.
 
 ## Estado y contribución

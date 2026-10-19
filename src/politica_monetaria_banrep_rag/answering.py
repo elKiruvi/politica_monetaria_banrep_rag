@@ -239,11 +239,14 @@ def verify(
     labels: dict[str, str],
     question: str,
     pages: dict[str, set[int]] | None = None,
+    *,
+    scope: str = "cited",
 ) -> tuple[str, str, list[str], str | None]:
     """Comprueba la salida del modelo; devuelve (estado, texto, citas, motivo).
 
     ``pages`` son las páginas (físicas e impresas) de cada bloque: un número precedido de «pág.»
-    se acepta solo si es una página de la evidencia citada."""
+    se acepta solo si es una página de la evidencia citada. ``scope="all"`` (resúmenes) admite
+    cifras de cualquier bloque revisado; ``"cited"`` (consultas) solo de los citados."""
     answer = result.get("answer")
     citations = result.get("citations")
     insufficient = result.get("insufficient_evidence")
@@ -277,7 +280,7 @@ def verify(
     body = _PAGE_REF.sub(" ", body)
     # De la pregunta solo se admiten años: una cifra de la premisa no se confirma sin evidencia.
     allowed = {n for n in _numbers(question) if _YEAR.match(n)}
-    for label in cited:
+    for label in cited if scope == "cited" else labels:
         allowed |= _evidence_numbers(labels[label])
         allowed |= {f"20{year}" for year in _MONTH_YEAR.findall(labels[label])}
     unverified = sorted(_numbers(body) - allowed)
@@ -300,6 +303,7 @@ def answer_question(
     generator: GenerationProvider,
     *,
     embedding_model: str | None = None,
+    scope: str = "cited",
 ) -> Answer:
     if not question.strip() or len(question) > MAX_QUESTION_CHARS:
         raise ValueError(f"La pregunta debe tener entre 1 y {MAX_QUESTION_CHARS} caracteres.")
@@ -344,7 +348,7 @@ def answer_question(
         }
         for label, hit in labels.items()
     }
-    status, text, cited, reason = verify(result, texts, question, pages)
+    status, text, cited, reason = verify(result, texts, question, pages, scope=scope)
     by_label = {citation.label: citation for citation in evidence}
     if status == "insufficient_evidence":
         text = "La evidencia recuperada no permite responder la pregunta con seguridad."
