@@ -250,8 +250,6 @@ def test_cli_comparar_requires_two_reports_and_reports_json(catalog_root, monkey
 
 
 def test_cli_comparar_prints_values_pages_and_differences(monkeypatch, capsys, tmp_path):
-    from politica_monetaria_banrep_rag import cli
-
     class Lexical:
         reports = REPORTS
 
@@ -275,8 +273,10 @@ def test_cli_comparar_prints_values_pages_and_differences(monkeypatch, capsys, t
         def open_active(self):
             return Active()
 
-    monkeypatch.setattr(cli, "IndexManager", Manager)
-    monkeypatch.setattr(cli, "_index_status", lambda root, active: {"warnings": []})
+    from politica_monetaria_banrep_rag import service
+
+    monkeypatch.setattr(service, "IndexManager", Manager)
+    monkeypatch.setattr(service.RagService, "corpus", lambda self, active: {"warnings": []})
     code, out, _ = run_cli(monkeypatch, capsys, "comparar", "¿Cómo cambiaron las proyecciones "
                            "de inflación entre enero y julio de 2025?", "--horizonte", "2025",
                            "--data-dir", str(tmp_path))  # fmt: skip

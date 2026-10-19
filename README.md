@@ -80,6 +80,17 @@ uv run --frozen banrep-rag resumir 2026-01 --tema "mercado laboral"
 
 `comparar` no usa el modelo de lenguaje: toma solo celdas atribuidas de los cuadros, compara únicamente el mismo cuadro, fila, horizonte y unidad, calcula las diferencias en Python (en puntos porcentuales cuando la unidad es porcentual), distingue revisiones de proyección y datos observados, advierte diferencias de redondeo y cita cada valor con su página. `resumir` redacta con Qwen y verifica las cifras contra la evidencia del informe. Detalles en la [ADR 0010](docs/decisiones/0010-comparaciones-y-resumenes.md).
 
+## API local
+
+```sh
+uv run --frozen banrep-rag servir            # http://127.0.0.1:8000 ; documentación en /api/v1/docs
+curl -s http://127.0.0.1:8000/api/v1/ready
+curl -s -X POST http://127.0.0.1:8000/api/v1/query -H 'Content-Type: application/json' \
+  -d '{"question": "¿Qué dijo el informe de octubre de 2025 sobre el precio del petróleo?"}'
+```
+
+Rutas `/api/v1`: `health`, `ready`, `status`, `reports`, `search`, `query`, `compare` y `summarize`. Usan el mismo servicio que la CLI, con los mismos filtros, verificaciones y avisos. Por seguridad escucha solo en localhost, rechaza cabeceras `Host` ajenas, no habilita CORS y no tiene autenticación: no la exponga a la red sin un proxy con autenticación (`--permitir-red` es explícito). Detalles en la [ADR 0011](docs/decisiones/0011-api-local.md).
+
 El diagnóstico de investigación, incluido el bloqueo de las consultas paginadas a la fuente, está en [docs/arquitectura/diagnostico_inicial.md](docs/arquitectura/diagnostico_inicial.md). Las entregas pendientes se describen en los issues. No se exige ningún proveedor comercial para instalar la base.
 
 ## Estado y contribución

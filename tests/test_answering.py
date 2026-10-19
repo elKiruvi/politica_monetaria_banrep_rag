@@ -441,7 +441,7 @@ def test_cli_consultar_with_fake_generator(catalog_root, monkeypatch, capsys):
     assert payload["retrieval_mode"] == "lexico"
     fake.error = GenerationError("Ollama no responde")
     code, _, err = run_cli(monkeypatch, capsys, "consultar", "inflación", "--data-dir", data)
-    assert code == 1 and "banrep-rag buscar" in err
+    assert code == 1 and "Ollama no responde" in err and "búsqueda" in err
 
 
 def test_cli_consultar_without_index(tmp_path, monkeypatch, capsys):
