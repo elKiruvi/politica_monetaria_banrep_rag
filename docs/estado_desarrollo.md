@@ -90,4 +90,4 @@ uv sync --frozen && uv run --frozen pytest -q
 uv run --frozen banrep-rag estado --data-dir data/catalogo
 uv run --frozen banrep-rag indexar --data-dir data/catalogo && uv run --frozen banrep-rag evaluar --data-dir data/catalogo
 ```
-Leer `CLAUDE.md` y las ADR 0001–0011. Retomar por «Trabajo en curso»: cerrar el PR de F8A (revisión y CI) y seguir con F8B (Docker).
+Leer `CLAUDE.md` y las ADR 0001–0013. Retomar por «Trabajo en curso»: cerrar el PR de F8A (revisión y CI) y seguir con F8B (Docker).
