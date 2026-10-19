@@ -290,6 +290,10 @@ def test_scanned_file_replaced_by_a_link_is_rejected(tmp_path, pdf_bytes):
         with pytest.raises(ImportRejectedError, match="enlace simbólico"):
             catalog.import_pdf(link, follow_symlinks=False)
         assert catalog.import_pdf(link)["report"]["report_id"] == "ipm-2026-07"  # explícito
+        folder = tmp_path / "carpeta.pdf"
+        folder.mkdir()
+        with pytest.raises(ImportRejectedError, match="no es un archivo regular"):
+            catalog.import_pdf(folder, follow_symlinks=False)
 
 
 def test_update_passes_download_options_to_sync(monkeypatch, capsys, tmp_path):

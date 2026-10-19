@@ -222,19 +222,19 @@ def _open_import(path: Path, *, follow_symlinks: bool) -> BinaryIO:
         if not follow_symlinks and path.is_symlink():
             raise ImportRejectedError(f"«{path.name}» es un enlace simbólico.") from exc
         raise
-    source = os.fdopen(fd, "rb")
     try:
-        info = os.fstat(source.fileno())
+        # Antes de fdopen: un directorio haría fallar fdopen sin cerrar el descriptor.
+        info = os.fstat(fd)
         if not stat.S_ISREG(info.st_mode):
             raise ImportRejectedError(f"«{path.name}» no es un archivo regular.")
         if info.st_size > _MAX_IMPORT_BYTES:
             raise ImportRejectedError(f"«{path.name}» excede 30 MB.")
         if hasattr(os, "set_blocking"):
-            os.set_blocking(source.fileno(), True)
+            os.set_blocking(fd, True)
     except BaseException:
-        source.close()
+        os.close(fd)
         raise
-    return source
+    return os.fdopen(fd, "rb")
 
 
 class Catalog:

@@ -50,7 +50,7 @@ uv run --frozen banrep-rag sincronizar --sin-descargar  # activa la ventana sin 
 uv run --frozen banrep-rag importar ~/Descargas/informe-politica-monetaria-*.pdf --activar   # o una carpeta
 ```
 
-El periodo se identifica con dos evidencias (portada con la serie junto al periodo, y título interno o ISSN de la serie), se rechazan presentaciones, anexos y otros documentos, y los metadatos se verifican en Crossref (`--sin-red` lo omite). Para sustituir un PDF ya importado del mismo periodo se usa `--reemplazar`. Un catálogo importado se marca como tal: **no** equivale a «los últimos 12 informes». Con `sincronizar --usar-importados`, un PDF importado solo sustituye a una descarga que falló. Detalles en la [ADR 0005](docs/decisiones/0005-importacion-local.md).
+El periodo se identifica con dos evidencias (portada con la serie junto al periodo, y título interno o ISSN de la serie), se rechazan presentaciones, anexos y otros documentos, y los metadatos se verifican en Crossref (`--sin-red` lo omite). Para sustituir un PDF ya importado del mismo periodo se usa `--reemplazar`. Un catálogo importado se marca como tal: **no** equivale a «los últimos 12 informes». Con `sincronizar --usar-importados`, un PDF importado sustituye a una descarga que falló o que no se intenta (tras un reto antibot o durante la espera de 12 h); con `--sin-descargar` se usa siempre que no haya una descarga verificada. Sin esas opciones nunca se usa. Detalles en la [ADR 0005](docs/decisiones/0005-importacion-local.md).
 
 ## Procesamiento de los informes
 
