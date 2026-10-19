@@ -66,8 +66,11 @@ _REPORT_MENTION = re.compile(
     r"(enero|abril|julio|octubre)\s+(?:de\s+|del\s+)?(\d{4})\b",
     re.IGNORECASE,
 )
+# «… y el de octubre de 2025», «con el informe de julio 2025»: no «y octubre de 2025» suelto,
+# que puede ser un horizonte.
 _FOLLOW_UP = re.compile(
-    r"\b(?:el|la|al|y)\s+(?:del?\s+)?(enero|abril|julio|octubre)\s+(?:de\s+|del\s+)?(\d{4})\b",
+    r"\b(?:el|al)\s+(?:informe\s+)?de\s+(enero|abril|julio|octubre)\s+(?:de\s+|del\s+)?"
+    r"(\d{4})\b",
     re.IGNORECASE,
 )
 
@@ -92,9 +95,11 @@ def detect_reports(
 
 
 # Una cifra: el signo solo cuenta si no sigue a una letra o dígito (no es un guion de palabra).
-_NUMBER = re.compile(r"(?:(?<![\w.,])[-−–])?(?<![\d])\d+(?:[.,]\d+)*")
+# La raya «–» separa rangos («4,4 %–5,9 %»): no es signo menos.
+_NUMBER = re.compile(r"(?:(?<![\w.,%])[-−])?(?<![\d])\d+(?:[.,]\d+)*")
+_LABEL = re.compile(r"\bE\d+\b")
 _PAGE_REF = re.compile(
-    r"\b(?:p[áa]gs?|p[áa]ginas?)\.?\s*(\d+)(?:\s*(?:-|–|a)\s*(\d+))?", re.IGNORECASE
+    r"\b(?:p[áa]gs?|p[áa]ginas?)\.?\s*(\d+)(?:\s*(?:-|–|a|y)\s*(\d+))?", re.IGNORECASE
 )
 # «dic-23», «jun 24»: encabezados de mes y año corto; el año completo equivale.
 _MONTH_YEAR = re.compile(
@@ -203,8 +208,8 @@ def build_messages(question: str, blocks: list[str]) -> tuple[str, str]:
 
 def _canonical(token: str) -> str:
     """«-4,70» → «-4.7»; «13.451» (miles) → «13451»; «4.7» → «4.7»."""
-    negative = token[0] in "-−–"
-    body = token.lstrip("-−–")
+    negative = token[0] in "-−"
+    body = token.lstrip("-−")
     if re.fullmatch(r"\d{1,3}(?:\.\d{3})+(?:,\d+)?", body):
         body = body.replace(".", "")
     body = body.replace(",", ".")
@@ -258,7 +263,7 @@ def verify(
         return "rejected", "", [], f"El modelo citó evidencia inexistente: {', '.join(unknown)}."
     if not cited:
         return "rejected", "", [], "El modelo respondió sin citar la evidencia."
-    body = _CITATION.sub(" ", answer)
+    body = _LABEL.sub(" ", _CITATION.sub(" ", answer))
     cited_pages = {page for label in cited for page in (pages or {}).get(label, set())}
     for match in _PAGE_REF.finditer(body):
         referenced = {int(group) for group in match.groups() if group}

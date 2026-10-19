@@ -259,6 +259,7 @@ def test_question_length_is_limited():
             (),
         ),  # fmt: skip
         ("Compara el IPM de abril 2025 con el de julio 2025", ("ipm-2025-07",), ("2025-04",)),
+        ("el informe de julio de 2025 para octubre de 2025 y enero de 2026", ("ipm-2025-07",), ()),
         # Meses de datos u horizontes: no son informes.
         ("Riesgos destacados en octubre de 2025", (), ()),
         ("¿Cuál fue la inflación anual en julio de 2025?", (), ()),
@@ -307,13 +308,15 @@ def test_figure_blind_spots_are_closed(text):
         ("Sumó 1000 millones [E1].", "Sumó 1.000 millones."),
         ("Bajó 0,5 p.p. en 2025 [E1].", "Bajó 0,5 pp en 2025."),
         ("Inflación 4,7 % y tasa 9,25 % [E1, E2].", "4,7 %"),
+        ("Está en las páginas 10 y 11 [E1].", "texto"),
+        ("Entre el 4,4 %–5,9 % según E1 (E1) [E1].", "rango entre el 4,4 % y 5,9 %"),
         ("Bajó dos puntos porcentuales [E1].", "Bajó 2 puntos porcentuales."),
     ],
 )
 def test_equivalent_figures_are_accepted(text, evidence):
     labels = {"E1": evidence, "E2": "La tasa fue 9,25 %."}
     result = {"answer": text, "citations": ["E1"], "insufficient_evidence": False}
-    assert verify(result, labels, "pregunta")[0] == "answered"
+    assert verify(result, labels, "pregunta", {"E1": {10, 11}})[0] == "answered"
 
 
 def test_month_year_headers_are_strict():
