@@ -18,7 +18,7 @@ uv run --frozen pytest -q            # offline: tests/conftest.py bloquea la red
 BANREP_LIVE=1 uv run --frozen pytest -q -k live   # opcional, consulta Crossref
 BANREP_OLLAMA_LIVE=1 uv run --frozen pytest -q -k ollama   # opcional, Ollama local con embeddinggemma
 uv run --frozen pre-commit run --all-files
-uv run --frozen banrep-rag --help    # descubrir, sincronizar, importar, estado, procesar, indexar, buscar, consultar, comparar, resumir, servir, detectar, actualizar, validar-indice, evaluar
+uv run --frozen banrep-rag --help    # descubrir, sincronizar, faltantes, importar, estado, procesar, indexar, buscar, consultar, comparar, resumir, servir, detectar, actualizar, validar-indice, evaluar
 ```
 Con `set -o pipefail` cuando se encadene `pytest … | tail`: sin él, un fallo pasa inadvertido.
 

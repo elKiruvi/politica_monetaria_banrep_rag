@@ -13,7 +13,7 @@ from pathlib import Path
 
 from politica_monetaria_banrep_rag import detector, diagnostics, reports
 from politica_monetaria_banrep_rag.answering import Answer
-from politica_monetaria_banrep_rag.catalog import Catalog, CatalogError
+from politica_monetaria_banrep_rag.catalog import Catalog, CatalogError, ImportRejectedError
 from politica_monetaria_banrep_rag.comparison import (
     Comparison,
 )
@@ -74,6 +74,10 @@ _PLAN_LABELS = {
     "revalidar": "verificación vencida, se volverá a descargar",
     "metadatos_o_archivo_cambiados": "metadatos o archivo local cambiados, se descargará",
     "importado_si_falla": "se intentará descargar; si falla, se usará el PDF importado",
+    "importado": "se usará el PDF importado (sin descargar)",
+    "pdf_anterior": "verificación vencida; se conserva el PDF verificado antes (sin descargar)",
+    "falta": "falta: no hay PDF verificado ni importado",
+    "importado_sin_autorizar": "sin descarga; hay un PDF importado: use --usar-importados",
 }
 
 
@@ -99,6 +103,10 @@ def _print_plan(plan: dict[str, object]) -> None:
     leaving = plan["leaving"]
     assert isinstance(window, list) and isinstance(leaving, list)
     print("Simulación (no se descargó ni modificó nada):")
+    if plan.get("blocked_until"):
+        print(
+            f"  Banrep bloqueó una descarga reciente: sin descargas hasta {plan['blocked_until']}."
+        )
     for row in window:
         print(f"  {row['report_id']} — {_PLAN_LABELS[row['status']]}")
     for report_id in leaving:
@@ -115,8 +123,24 @@ def _offline_catalog(root: Path) -> Catalog:
     return Catalog(root, BanrepSource(), PdfDownloader())
 
 
+def _import_candidates(paths: list[Path]) -> list[tuple[Path, bool]]:
+    """Archivos indicados y PDF de primer nivel de cada carpeta (sin recorrer subcarpetas)."""
+    candidates = []
+    for path in paths:
+        if path.is_dir():
+            found = sorted(
+                child
+                for child in path.iterdir()
+                if child.suffix.lower() == ".pdf" and child.is_file() and not child.is_symlink()
+            )
+            candidates += [(child, True) for child in found]
+        else:
+            candidates.append((path, False))
+    return candidates
+
+
 def _import(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
-    if args.periodo and len(args.archivos) != 1:
+    if args.periodo and (len(args.archivos) != 1 or args.archivos[0].is_dir()):
         parser.exit(2, "Error: --periodo solo se admite con un único archivo.\n")
     root = _data_dir(args)
     try:
@@ -130,13 +154,29 @@ def _import(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                     contact_email=os.getenv("BANREP_CONTACT_EMAIL") or None
                 )
                 stack.callback(lookup.client.close)
-            for path in args.archivos:
-                entry = catalog.import_pdf(
-                    path,
-                    expected_period=args.periodo,
-                    lookup=lookup.find if lookup is not None else None,
-                    replace=args.reemplazar,
-                )
+            imported = skipped = 0
+            for path, scanned in _import_candidates(args.archivos):
+                try:
+                    entry = catalog.import_pdf(
+                        path,
+                        expected_period=args.periodo,
+                        lookup=lookup.find if lookup is not None else None,
+                        replace=args.reemplazar,
+                        follow_symlinks=not scanned,
+                    )
+                except (ImportFileError, ImportRejectedError, OSError) as exc:
+                    if not scanned:
+                        raise
+                    reason = (
+                        f"fallo del sistema local ({type(exc).__name__})."
+                        if isinstance(exc, OSError)
+                        else exc
+                    )
+                    # En una carpeta (p. ej. Descargas) es normal encontrar otros PDF.
+                    skipped += 1
+                    print(f"Omitido «{path.name}»: {reason}", file=sys.stderr)
+                    continue
+                imported += 1
                 origin = (
                     "metadatos de Crossref"
                     if entry["metadata_verified"]
@@ -146,6 +186,12 @@ def _import(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                 print(
                     f"Importado {str(entry['path'])[4:15]} desde «{path.name}» "
                     f"({evidence}; {origin})."
+                )
+            if skipped:
+                print(f"{imported} importado(s), {skipped} omitido(s).", file=sys.stderr)
+            if not imported:
+                parser.exit(
+                    1, "Error de importación: no se encontró ningún informe que importar.\n"
                 )
             if args.activar:
                 active = catalog.current()
@@ -884,15 +930,79 @@ def _run_sync(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
                 revalidate_seconds=args.revalidar_dias * 86400,
                 download_pause=args.pausa,
             )
+            options = {
+                "use_imports": args.usar_importados,
+                "allow_downloads": not args.sin_descargar,
+                "ignore_cooldown": args.reintentar_ahora,
+            }
             if args.dry_run:
-                _print_plan(catalog.plan(max_reports, use_imports=args.usar_importados))
+                _print_plan(catalog.plan(max_reports, **options))
                 return
-            snapshot_id = catalog.sync(max_reports, use_imports=args.usar_importados)
+            snapshot_id = catalog.sync(max_reports, **options)
+            if catalog.last_blocked is not None:
+                print(
+                    "Aviso: Banrep pidió una verificación antibot; la ventana se activó con PDF "
+                    "verificados antes o importados, sin revalidarlos en la fuente.",
+                    file=sys.stderr,
+                )
     except OSError as exc:
         parser.exit(1, f"Error de sincronización: {_local_failure(exc)}\n")
     except (SourceError, DownloadError, CatalogError, ValueError) as exc:
         parser.exit(1, f"Error de sincronización: {exc}\n")
     print(f"Catálogo activo: {snapshot_id}")
+
+
+_MISSING_LABELS = {
+    "sin_cambios": "descargado y verificado",
+    "pdf_anterior": "descargado (verificación vencida)",
+    "importado": "importado",
+    "falta": "FALTA",
+}
+
+
+def _missing(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Qué informes de la ventana tienen PDF local; consulta Crossref, nunca descarga PDF."""
+    max_reports = _max_reports(parser, args)
+    root = _data_dir(args)
+    try:
+        with ExitStack() as stack:
+            source = _make_source("crossref")
+            stack.callback(source.client.close)
+            catalog = Catalog(root, source, PdfDownloader())
+            stack.callback(catalog.downloader.client.close)
+            plan = catalog.plan(max_reports, allow_downloads=False)
+            until = catalog.blocked_until() if root.exists() else None
+    except OSError as exc:
+        parser.exit(1, f"Error: {_local_failure(exc)}\n")
+    except (SourceError, CatalogError, ValueError) as exc:
+        parser.exit(1, f"Error: {exc}\n")
+    rows = plan["window"]
+    assert isinstance(rows, list)
+    absent = [row for row in rows if row["status"] == "falta"]
+    blocked_until = (
+        datetime.fromtimestamp(until, UTC).isoformat(timespec="seconds") if until else None
+    )
+    if args.json:
+        payload = {"window": rows, "missing": len(absent), "blocked_until": blocked_until}
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    for row in rows:
+        print(f"  {row['report_id'][4:]}  {_MISSING_LABELS[row['status']]:<34} {row['title']}")
+        if row["status"] == "falta":
+            print(f"           {row['source_url']}")
+    if absent:
+        print(
+            f"\nFaltan {len(absent)} de {len(rows)}. Abra cada enlace en su navegador, guarde el "
+            "PDF y ejecute «banrep-rag importar CARPETA»; después, «banrep-rag sincronizar "
+            "--sin-descargar» activa la ventana completa."
+        )
+    else:
+        print(f"\nLa ventana de {len(rows)} informes está completa en el equipo.")
+    if blocked_until:
+        print(
+            f"Banrep bloqueó una descarga reciente: «sincronizar» no pedirá PDF hasta "
+            f"{blocked_until} (--reintentar-ahora para un intento manual)."
+        )
 
 
 DEFAULT_REFERENCE = Path("fuentes/informes_conocidos.json")
@@ -1122,6 +1232,16 @@ def main() -> None:
         help="Si una descarga falla, usa el PDF importado localmente para ese informe",
     )
     sync.add_argument(
+        "--sin-descargar",
+        action="store_true",
+        help="No solicita ningún PDF: compone la ventana con descargas verificadas e importados",
+    )
+    sync.add_argument(
+        "--reintentar-ahora",
+        action="store_true",
+        help="Intenta descargar aunque Banrep haya bloqueado una descarga en las últimas 12 h",
+    )
+    sync.add_argument(
         "--revalidar-dias",
         type=_non_negative,
         default=30.0,
@@ -1133,10 +1253,20 @@ def main() -> None:
         default=10.0,
         help="Segundos de espera entre descargas reales (por defecto: 10)",
     )
+    missing_cmd = subcommands.add_parser(
+        "faltantes",
+        help="Lista los informes de la ventana sin PDF local, con su enlace oficial",
+    )
+    missing_cmd.add_argument("--max-reports", help="Cantidad de informes (por defecto: 12)")
+    missing_cmd.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
+    missing_cmd.add_argument("--json", action="store_true", help="Emite el resultado en JSON")
     importer_cmd = subcommands.add_parser(
         "importar", help="Importa PDF oficiales obtenidos legítimamente (procedencia local)"
     )
-    importer_cmd.add_argument("archivos", nargs="+", type=Path, help="PDF a importar")
+    importer_cmd.add_argument(
+        "archivos", nargs="+", type=Path,
+        help="PDF o carpetas (p. ej. ~/Descargas); en una carpeta se omiten los que no son IPM",
+    )  # fmt: skip
     importer_cmd.add_argument("--periodo", help="AAAA-MM; solo con un archivo, para confirmar")
     importer_cmd.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
     importer_cmd.add_argument(
@@ -1328,6 +1458,14 @@ def main() -> None:
         "--usar-importados", action="store_true",
         help="Si una descarga falla, usa el PDF importado localmente",
     )  # fmt: skip
+    update_cmd.add_argument(
+        "--sin-descargar", action="store_true",
+        help="No solicita PDF: usa descargas verificadas e importados",
+    )  # fmt: skip
+    update_cmd.add_argument(
+        "--reintentar-ahora", action="store_true",
+        help="Intenta descargar aunque Banrep haya bloqueado una descarga en las últimas 12 h",
+    )  # fmt: skip
     update_cmd.add_argument("--revalidar-dias", type=_non_negative, default=30.0)
     update_cmd.add_argument("--pausa", type=_pause, default=10.0)
     update_cmd.add_argument("--procesos", type=int, default=1, choices=range(1, 9), metavar="N")
@@ -1345,6 +1483,7 @@ def main() -> None:
         "servir": _serve,
         "detectar": _detect,
         "actualizar": _update,
+        "faltantes": _missing,
     }.get(args.command)
     if handler is not None:
         handler(parser, args)

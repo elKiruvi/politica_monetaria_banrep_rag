@@ -372,14 +372,16 @@ def test_revalidation_failure_and_recovery_are_observable(tmp_path, pdf_bytes, f
         assert attempt["status"] == "revalidation_pending"
         assert attempt["error_type"] == expected
         assert attempt["last_successful_verification_at"] == first_success
-        clock.now += 3600
+        # Tras un bloqueo antibot se espera 12 h antes de volver a pedir el PDF.
+        step = 13 * 3600 if failure == 302 else 3600
+        clock.now += step
         assert catalog.sync(1) == pending
         assert (
             catalog.revalidations()["ipm-2026-07"]["last_attempt_at"]
             != (attempt["last_attempt_at"])
         )
         mode[0] = 200
-        clock.now += 3600
+        clock.now += step
         assert catalog.sync(1) == verified
     recovered = catalog.verification(catalog.current()[1]["reports"])[0]
     assert recovered["status"] == "verified" and recovered["error_type"] is None
@@ -749,11 +751,12 @@ def test_plan_reports_changes_without_network_or_writes(tmp_path, pdf_bytes):
     assert plan == {
         "window": [
             {"report_id": "ipm-2026-10", "title": "Informe de Política Monetaria - 10",
-             "status": "nuevo"},
+             "status": "nuevo", "source_url": "https://www.banrep.gov.co/es/informe/10"},
             {"report_id": "ipm-2026-07", "title": "Informe de Política Monetaria - 7",
-             "status": "sin_cambios"},
+             "status": "sin_cambios", "source_url": "https://www.banrep.gov.co/es/informe/7"},
         ],
         "leaving": ["ipm-2026-04"],
+        "blocked_until": None,
     }  # fmt: skip
     clock.now += 31 * 86400
     assert catalog.plan(2)["window"][1]["status"] == "revalidar"
@@ -847,7 +850,10 @@ def test_verified_downloads_survive_a_later_failure(tmp_path, pdf_bytes):
             catalog.sync(3)
         assert catalog.current() is None
         blocked["on"] = False
-        catalog.sync(3)
+        with pytest.raises(CatalogError, match="2026-01"):
+            catalog.sync(3)  # durante la espera tras el bloqueo no se pide ningún PDF
+        assert len(calls) == 3
+        catalog.sync(3, ignore_cooldown=True)
     assert len(calls) == 4  # 07, 04, 01 bloqueado y luego solo 01
 
 
