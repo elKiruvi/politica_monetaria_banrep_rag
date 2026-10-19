@@ -80,6 +80,15 @@ uv run --frozen banrep-rag resumir 2026-01 --tema "mercado laboral"
 
 `comparar` no usa el modelo de lenguaje: toma solo celdas atribuidas de los cuadros, compara únicamente el mismo cuadro, fila, horizonte y unidad, calcula las diferencias en Python (en puntos porcentuales cuando la unidad es porcentual), distingue revisiones de proyección y datos observados, advierte diferencias de redondeo y cita cada valor con su página. `resumir` redacta con Qwen y verifica las cifras contra la evidencia del informe. Detalles en la [ADR 0010](docs/decisiones/0010-comparaciones-y-resumenes.md).
 
+## Reportes descargables
+
+```sh
+uv run --frozen banrep-rag comparar "¿Cómo cambiaron las proyecciones de inflación entre enero y julio de 2025?" --exportar comparacion.pdf
+uv run --frozen banrep-rag consultar "¿Qué dijo el informe de octubre de 2025 sobre el petróleo?" --exportar consulta.md
+```
+
+Formatos `.md`, `.html` (imprimible) y `.pdf`. Incluyen parámetros, informes con su vigencia, metodología, resultados con unidades y horizontes, citas, advertencias, estado del corpus y la declaración de proyecto no oficial. En la web, cada resultado ofrece «Descargar reporte»; en la API, `GET /api/v1/exports/{export_id}?format=md|html|pdf`. Detalles en la [ADR 0012](docs/decisiones/0012-reportes.md).
+
 ## Interfaz web y API local
 
 ```sh
