@@ -1,6 +1,6 @@
 # Estado del desarrollo — checkpoint F7
 
-**Actualizado:** 19 de octubre de 2026. H1–H5 fusionadas (#27–#31 cerrados). **F5 cerrada** (#6): PR #37 y #38, `main` `763b655`, CI post-merge aprobado (run 39202051557). **F6 cerrada** (#7): PR #39 y #40, `main` `33fb27f`, CI post-merge aprobado (run 39222532131). F7A fusionada (PR #41, `main` `def1e47`) y F7B (PR #42, `main` `6b11b6a`, CI post-merge aprobado, run 39251023829). **Fase en curso:** F7 (#8), rama `feat/report-export` (F7C: reportes).
+**Actualizado:** 19 de octubre de 2026. H1–H5 fusionadas (#27–#31 cerrados). **F5 cerrada** (#6): PR #37 y #38, `main` `763b655`, CI post-merge aprobado (run 39202051557). **F6 cerrada** (#7): PR #39 y #40, `main` `33fb27f`, CI post-merge aprobado (run 39222532131). **F7 cerrada** (#8): PR #41, #42 y #43, `main` `0292438`, CI post-merge aprobado (run 39260908249). **Fase en curso:** F8 (#9), rama `feat/publication-detector` (F8A: detector y actualización local).
 
 ## Resumen por fase
 
@@ -14,8 +14,9 @@
 | F4 Procesamiento | #5 | **completada**; H1–H5 fusionadas (PR #32–#36) | ADR 0006 |
 | F5 Indexación y recuperación | #6 | **cerrada**: FTS5, FAISS, RRF híbrida, manifiesto, reversión, evaluación | ADR 0007, 0008 |
 | F6 Generación y comparación | #7 | **cerrada**: `consultar` verificado, `comparar` determinista, `resumir` trazable | ADR 0009, 0010 |
-| F7 Producto | #8 | F7A (servicio, API, `servir`) y F7B (web) fusionadas; **F7C** (reportes) en PR | ADR 0011, 0012 |
-| F8–F10 | #9–#11 | pendientes | — |
+| F7 Producto | #8 | **cerrada**: servicio, API, web y reportes (CLI, API y web) | ADR 0011, 0012 |
+| F8 Automatización | #9 | **F8A en PR**: detector Crossref (workflow) y `actualizar`; F8B (Docker) pendiente | ADR 0013 |
+| F9–F10 | #10–#11 | pendientes | — |
 
 ## Qué funciona hoy (comandos reales)
 
@@ -47,12 +48,12 @@
 
 ### Trabajo en curso (19-10-2026)
 
-- **F7C, reportes:** rama `feat/report-export`, worktree `../politica_monetaria_banrep_rag-worktrees/f7c-reportes`. Exporta a Markdown, HTML y PDF desde la CLI, la API y la web (ADR 0012). Al fusionarla, cerrar #8.
+- **F8A, detector y actualización local:** rama `feat/publication-detector`; referencia real con 12 informes en `fuentes/informes_conocidos.json`. Tras fusionar, ejecutar el workflow «Detector de publicaciones» a mano (`workflow_dispatch`) y comprobar el resultado.
 - **Revisión visual de la web en un navegador:** sigue pendiente; en las sesiones de desarrollo no hubo herramienta de navegador. Abrir `http://127.0.0.1:8000` tras `banrep-rag servir`, probar cada pestaña con y sin Ollama, y descargar un reporte de cada formato.
 
 ### Fases siguientes
 
-1. **F8, automatización y Docker (#9):**
+1. **F8B, Docker (#9):** Dockerfile y Compose (usuario no root, volúmenes, healthcheck, Ollama en el host o en contenedor, CPU y GPU), con prueba de humo en GitHub Actions; en el equipo de desarrollo no hay Docker. Resto de F8 (#9):
    - Detector de publicaciones en GitHub Actions con Crossref, que distinga sin cambios, nuevo informe, documento actualizado, error de red y bloqueo, sin issues duplicados.
    - Sincronización e indexación local con reversión.
    - Dockerfile y Compose: usuario no root, volúmenes, healthcheck, Ollama en el host o en contenedor, CPU y GPU.
@@ -89,4 +90,4 @@ uv sync --frozen && uv run --frozen pytest -q
 uv run --frozen banrep-rag estado --data-dir data/catalogo
 uv run --frozen banrep-rag indexar --data-dir data/catalogo && uv run --frozen banrep-rag evaluar --data-dir data/catalogo
 ```
-Leer `CLAUDE.md` y las ADR 0001–0011. Retomar por «Trabajo en curso»: cerrar el PR de F7C (revisión y CI), cerrar #8 y seguir con F8.
+Leer `CLAUDE.md` y las ADR 0001–0011. Retomar por «Trabajo en curso»: cerrar el PR de F8A (revisión y CI) y seguir con F8B (Docker).
