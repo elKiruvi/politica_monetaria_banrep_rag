@@ -117,10 +117,10 @@ def test_ollama_identity_batches_templates_and_no_truncation():
     identity = provider.identity()
     assert identity == EmbeddingIdentity(
         "ollama",
-        "embeddinggemma",
+        "embeddinggemma:latest",
         "sha256:abc",
         3,
-        "title: {section} | text: {text}",
+        "title: {section_or_none} | text: {text}",
         "task: search result | query: {query}",
     )
     vectors = provider.embed_documents([("2.1", "a"), ("2.2", "b"), ("2.3", "c {x}")])
@@ -479,3 +479,60 @@ def test_cli_default_index_reports_ollama_down_and_suggests_lexical(
     code, _, err = run_cli(monkeypatch, capsys, "indexar", "--data-dir", str(catalog_root))
     assert code == 1 and "--sin-embeddings" in err and "no cambió" in err
     assert IndexManager(catalog_root).active_id() is None
+
+
+def test_auto_mode_falls_back_to_lexical_when_ollama_fails(catalog_root, monkeypatch, capsys):
+    from politica_monetaria_banrep_rag import cli
+
+    data = str(catalog_root)
+    monkeypatch.setattr(cli, "_ollama", lambda model: FakeEmbedder(model=model))
+    run_cli(monkeypatch, capsys, "indexar", "--data-dir", data)
+
+    def down(request):
+        raise httpx.ConnectError("rechazada")
+
+    monkeypatch.setattr(
+        cli,
+        "_ollama",
+        lambda model: OllamaEmbeddings(
+            model, client=httpx.Client(transport=httpx.MockTransport(down))
+        ),
+    )
+    code, out, err = run_cli(
+        monkeypatch, capsys, "buscar", "petróleo", "--json", "--data-dir", data
+    )
+    assert code == 0 and "se usa la léxica" in err
+    assert json.loads(out)["mode"] == "lexico"
+    code, _, err = run_cli(monkeypatch, capsys, "buscar", "petróleo", "--modo", "hibrido",
+                           "--data-dir", data)  # fmt: skip
+    assert code == 1 and "--modo lexico" in err
+    code, out, _ = run_cli(monkeypatch, capsys, "validar-indice", "--data-dir", data)
+    assert code == 0 and "No se pudo comprobar el modelo" in out
+    monkeypatch.setattr(cli, "_ollama", lambda model: FakeEmbedder(model=model, digest="otro"))
+    code, out, _ = run_cli(monkeypatch, capsys, "validar-indice", "--data-dir", data)
+    assert code == 3 and "reconstruya" in out
+
+
+def test_ollama_names_timeouts_and_server_errors():
+    provider = OllamaEmbeddings("embeddinggemma")
+    try:
+        assert provider.model == "embeddinggemma:latest"
+        assert provider.client.timeout.connect == 5.0
+    finally:
+        provider.close()
+    assert ollama(fake_server(), model="embeddinggemma:latest").identity().model == (
+        "embeddinggemma:latest"
+    )
+
+    def broken(request):
+        return httpx.Response(500, text="fallo interno")
+
+    with pytest.raises(EmbeddingError, match="respondió 500 al listar"):
+        ollama(broken).identity()
+
+
+def test_embeddinggemma_uses_title_none_without_section():
+    seen = []
+    provider = ollama(fake_server(seen=seen))
+    provider.embed_documents([("", "texto")])
+    assert seen[-1]["input"] == ["title: none | text: texto"]

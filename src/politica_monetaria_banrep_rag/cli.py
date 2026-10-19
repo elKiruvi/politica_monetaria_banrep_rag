@@ -406,12 +406,30 @@ def _validate_index(parser: argparse.ArgumentParser, args: argparse.Namespace) -
         active = IndexManager(root).open_active()
     except IndexStoreError as exc:
         parser.exit(1, f"Índice no válido: {exc}\n")
+    model_ok = True
+    extra: list[str] = []
     try:
         status = _index_status(root, active)
     except CatalogError as exc:
         status = {"index_matches_catalog": False, "warnings": [str(exc)], "reports": []}
+    try:
+        embedder = _embedder_for(active, "semantico") if active.embedding else None
+        if embedder is not None:
+            try:
+                active.check_embedder(embedder)
+            finally:
+                embedder.close()
+    except IndexStoreError as exc:
+        model_ok = False
+        extra.append(str(exc))
+    except EmbeddingError as exc:
+        extra.append(f"No se pudo comprobar el modelo de embeddings: {exc}")
     finally:
         active.close()
+    previous = status["warnings"]
+    assert isinstance(previous, list)
+    status["warnings"] = [*previous, *extra]
+    status["embedding_model_matches"] = model_ok
     if args.json:
         print(json.dumps({"index_id": active.index_id, "integrity": "ok", **status},
                          ensure_ascii=False, indent=2))  # fmt: skip
@@ -426,7 +444,7 @@ def _validate_index(parser: argparse.ArgumentParser, args: argparse.Namespace) -
             print(f"  {report['report_id']} — vigencia: {report['verification_status']}")
         for warning in warnings:
             print(f"Aviso: {warning}")
-    if not status["index_matches_catalog"]:
+    if not status["index_matches_catalog"] or not model_ok:
         parser.exit(3, "")
 
 
@@ -490,8 +508,18 @@ def _search(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     embedder = None
     try:
         mode = _resolve_mode(active, args.modo)
-        embedder = _embedder_for(active, mode)
-        hits = active.search(args.consulta, filters, top_k=args.top_k, mode=mode, embedder=embedder)
+        try:
+            embedder = _embedder_for(active, mode)
+            hits = active.search(
+                args.consulta, filters, top_k=args.top_k, mode=mode, embedder=embedder
+            )
+        except (IndexStoreError, EmbeddingError) as exc:
+            if args.modo != "auto" or mode == "lexico":
+                raise
+            # «auto» nunca deja sin respuesta: degrada a la vía léxica y lo dice.
+            print(f"Aviso: vía semántica no disponible ({exc}); se usa la léxica.", file=sys.stderr)
+            mode = "lexico"
+            hits = active.search(args.consulta, filters, top_k=args.top_k, mode=mode)
         notes = {
             hit.chunk.chunk_id: [note.text for note in active.table_notes(hit.chunk)]
             for hit in hits
@@ -499,7 +527,11 @@ def _search(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         status = _index_status(root, active)
     except ValueError as exc:
         parser.exit(2, f"Error: {exc}\n")
-    except (CatalogError, IndexStoreError, EmbeddingError) as exc:
+    except (IndexStoreError, EmbeddingError) as exc:
+        parser.exit(
+            1, f"Error de búsqueda: {exc}\nLa vía léxica no necesita Ollama: «--modo lexico».\n"
+        )
+    except CatalogError as exc:
         parser.exit(1, f"Error de búsqueda: {exc}\n")
     finally:
         active.close()
@@ -553,7 +585,9 @@ def _evaluate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
             k=args.k,
         )
     except (IndexStoreError, EmbeddingError) as exc:
-        parser.exit(1, f"Error de evaluación: {exc}\n")
+        parser.exit(
+            1, f"Error de evaluación: {exc}\nLa vía léxica no necesita Ollama: «--modo lexico».\n"
+        )
     finally:
         active.close()
         if embedder is not None:

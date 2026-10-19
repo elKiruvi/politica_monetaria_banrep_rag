@@ -19,7 +19,11 @@ DEFAULT_OLLAMA_URL = "http://127.0.0.1:11434"
 DEFAULT_EMBEDDING_MODEL = "embeddinggemma"
 # Plantillas recomendadas por cada modelo; forman parte de la identidad del índice.
 _TEMPLATES = {
-    "embeddinggemma": ("title: {section} | text: {text}", "task: search result | query: {query}"),
+    # EmbeddingGemma pide «title: none» cuando no hay título.
+    "embeddinggemma": (
+        "title: {section_or_none} | text: {text}",
+        "task: search result | query: {query}",
+    ),
     "bge-m3": ("{section}\n{text}", "{query}"),
 }
 _GENERIC_TEMPLATE = ("{section}\n{text}", "{query}")
@@ -107,10 +111,14 @@ class OllamaEmbeddings:
             raise ValueError("La URL de Ollama debe ser http o https.")
         if not 1 <= batch_size <= 256:
             raise ValueError("El tamaño de lote debe estar entre 1 y 256.")
-        self.model = model
+        # Ollama lista los modelos sin etiqueta como «:latest»; un solo nombre por modelo.
+        self.model = model if ":" in model else f"{model}:latest"
         self.base_url = base_url.rstrip("/")
         self.batch_size = batch_size
-        self.client = client or httpx.Client(timeout=timeout, trust_env=False)
+        # Conexión corta: un host que no responde falla en segundos, no en minutos.
+        self.client = client or httpx.Client(
+            timeout=httpx.Timeout(timeout, connect=5.0), trust_env=False
+        )
         family = model.split(":")[0].split("/")[-1]
         self.document_template, self.query_template = _TEMPLATES.get(family, _GENERIC_TEMPLATE)
         self._identity: EmbeddingIdentity | None = None
@@ -147,15 +155,18 @@ class OllamaEmbeddings:
     def _digest(self) -> str:
         try:
             response = self.client.get(f"{self.base_url}/api/tags")
-            models = response.json().get("models", []) if response.status_code == 200 else []
+            if response.status_code != 200:
+                raise EmbeddingError(
+                    f"Ollama respondió {response.status_code} al listar los modelos instalados."
+                )
+            models = response.json().get("models", [])
         except (httpx.HTTPError, ValueError, AttributeError) as exc:
             raise EmbeddingError(
                 f"No se pudo contactar a Ollama en {self.base_url}. ¿Está en ejecución "
                 "(«ollama serve»)?"
             ) from exc
-        wanted = {self.model, f"{self.model}:latest"}
         for entry in models if isinstance(models, list) else []:
-            if isinstance(entry, dict) and entry.get("name") in wanted:
+            if isinstance(entry, dict) and entry.get("name") == self.model:
                 digest = entry.get("digest")
                 if isinstance(digest, str) and digest:
                     return digest
@@ -190,7 +201,10 @@ class OllamaEmbeddings:
         self, items: Sequence[tuple[str, str]], progress: Callable[[int], None] | None = None
     ) -> np.ndarray:
         dimension = self.identity().dimension
-        texts = [self.document_template.format(section=s, text=t) for s, t in items]
+        texts = [
+            self.document_template.format(section=s, section_or_none=s or "none", text=t)
+            for s, t in items
+        ]
         parts = []
         for start in range(0, len(texts), self.batch_size):
             parts.append(self._embed(texts[start : start + self.batch_size], dimension))
