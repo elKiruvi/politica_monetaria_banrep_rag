@@ -237,12 +237,38 @@ class LexicalIndex:
         hits = []
         for rank, (data, score) in enumerate(rows, start=1):
             chunk = self._chunk(data)
-            hits.append(RetrievalHit(rank, chunk, self._reports[chunk.report_id], score))
+            hits.append(
+                RetrievalHit(rank, chunk, self._reports[chunk.report_id], score, lexical_rank=rank)
+            )
         return hits
 
     def _chunk(self, data: str) -> IndexedChunk:
         report_id = json.loads(data)["report_id"]
         return IndexedChunk.from_dict(json.loads(data), pages=self._reports[report_id].pdf_pages)
+
+    def filtered_rowids(self, filters: SearchFilters) -> list[int] | None:
+        """Filas que cumplen los filtros (mismo SQL que la búsqueda); ``None`` si no hay filtros."""
+        where, params = self._filter_sql(filters)
+        if not where:
+            return None
+        rows = self._db.execute(
+            "SELECT c.rowid FROM chunks c JOIN reports r ON r.report_id = c.report_id "
+            f"WHERE 1 = 1{where} ORDER BY c.rowid",
+            params,
+        ).fetchall()
+        return [rowid for (rowid,) in rows]
+
+    def chunks_by_rowid(self, rowids: list[int]) -> dict[int, IndexedChunk]:
+        if not rowids:
+            return {}
+        rows = self._db.execute(
+            f"SELECT rowid, data FROM chunks WHERE rowid IN ({','.join('?' * len(rowids))})",
+            rowids,
+        ).fetchall()
+        return {rowid: self._chunk(data) for rowid, data in rows}
+
+    def ordered_chunk_ids(self) -> list[str]:
+        return [row[0] for row in self._db.execute("SELECT chunk_id FROM chunks ORDER BY rowid")]
 
     def all_chunks(self) -> list[IndexedChunk]:
         rows = self._db.execute("SELECT data FROM chunks ORDER BY rowid").fetchall()
