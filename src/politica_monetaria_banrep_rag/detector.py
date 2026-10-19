@@ -8,6 +8,7 @@ La referencia solo guarda metadatos (nunca PDF) y se actualiza de forma explíci
 
 import hashlib
 import json
+import re
 from dataclasses import asdict, dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
@@ -25,9 +26,17 @@ REFERENCE_VERSION = 1
 # Campos que identifican el documento publicado: si cambian, el PDF puede ser otro.
 _DOCUMENT_FIELDS = ("download_url", "file_updated_at", "source_updates")
 # Campos descriptivos: su cambio es una corrección de metadatos.
-_METADATA_FIELDS = ("title", "doi", "published_at", "source_url", "language", "document_type")
+_METADATA_FIELDS = (
+    "reference_period",
+    "title",
+    "doi",
+    "published_at",
+    "source_url",
+    "language",
+    "document_type",
+)
 # «discovered_at» y la fecha de depósito en Crossref cambian sin que cambie el informe.
-_TRACKED = ("report_id", "reference_period", *_DOCUMENT_FIELDS, *_METADATA_FIELDS)
+_TRACKED = ("report_id", *_DOCUMENT_FIELDS, *_METADATA_FIELDS)
 
 
 @dataclass(frozen=True)
@@ -59,12 +68,18 @@ def snapshot(record: ReportRecord) -> dict[str, object]:
 
 def load_reference(path: Path) -> dict[str, dict[str, object]]:
     data = json.loads(path.read_text(encoding="utf-8"))
-    if data.get("version") != REFERENCE_VERSION or not isinstance(data.get("reports"), list):
+    if (
+        not isinstance(data, dict)
+        or data.get("version") != REFERENCE_VERSION
+        or not isinstance(data.get("reports"), list)
+    ):
         raise ValueError("Referencia de informes con formato no reconocido.")
     reports: dict[str, dict[str, object]] = {}
     for item in data["reports"]:
         if not isinstance(item, dict) or not isinstance(item.get("report_id"), str):
             raise ValueError("Informe sin identificador en la referencia.")
+        if item["report_id"] in reports:
+            raise ValueError(f"Informe repetido en la referencia: {item['report_id']}.")
         reports[item["report_id"]] = item
     return reports
 
@@ -99,9 +114,10 @@ def classify(reference: dict[str, dict[str, object]], current: list[ReportRecord
         document = tuple(f for f in _DOCUMENT_FIELDS if known.get(f) != now[f])
         metadata = tuple(f for f in _METADATA_FIELDS if known.get(f) != now[f])
         if document:
+            # Se informan también los metadatos que cambiaron junto con el documento.
             key = _key("documento_actualizado", record.report_id, now)
             changes.append(Change("documento_actualizado", record.report_id, record.doi,
-                                  record.title, document, key))  # fmt: skip
+                                  record.title, document + metadata, key))  # fmt: skip
         elif metadata:
             key = _key("correccion_metadatos", record.report_id, now)
             changes.append(Change("correccion_metadatos", record.report_id, record.doi,
@@ -126,7 +142,8 @@ def detect(
         cause = exc.__cause__
         if isinstance(cause, httpx.TransportError):
             return Detection("error_red", checked_at, message=str(exc)), []
-        if str(exc).startswith("Crossref respondió HTTP"):  # 429, 5xx: servicio no disponible
+        http = re.match(r"Crossref respondió HTTP (\d{3})", str(exc))
+        if http and (http.group(1) == "429" or http.group(1).startswith("5")):
             return Detection("fuente_no_disponible", checked_at, message=str(exc)), []
         return Detection("respuesta_ambigua", checked_at, message=str(exc)), []
     except httpx.TransportError as exc:

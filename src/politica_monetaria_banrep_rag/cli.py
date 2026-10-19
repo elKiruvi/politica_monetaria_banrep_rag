@@ -915,16 +915,35 @@ def _detect(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     reference_path = args.referencia
     try:
         reference = detector.load_reference(reference_path) if reference_path.exists() else {}
-    except (OSError, ValueError) as exc:
+    except (OSError, ValueError, json.JSONDecodeError) as exc:
         parser.exit(2, f"Error: referencia no válida ({exc}).\n")
-    with ExitStack() as stack:
-        source = CrossrefReportSource(contact_email=os.getenv("BANREP_CONTACT_EMAIL") or None)
-        stack.callback(source.client.close)
-        result, records = detector.detect(source, reference, max_reports=max_reports)
+    if not reference and not args.actualizar_referencia:
+        # Sin referencia, cada informe parecería nuevo: se exige crearla de forma explícita.
+        parser.exit(
+            2,
+            f"Error: no hay referencia en {reference_path}; créela con "
+            "«banrep-rag detectar --actualizar-referencia».\n",
+        )
+    try:
+        with ExitStack() as stack:
+            source = CrossrefReportSource(contact_email=os.getenv("BANREP_CONTACT_EMAIL") or None)
+            stack.callback(source.client.close)
+            result, records = detector.detect(source, reference, max_reports=max_reports)
+    except ValueError as exc:
+        parser.exit(2, f"Error: {exc}\n")
     if args.actualizar_referencia:
         if result.status not in {"sin_cambios", "cambios"}:
             parser.exit(1, "Error: no se actualiza la referencia sin una respuesta válida.\n")
-        detector.write_reference(reference_path, records, now=datetime.now(UTC))
+        if len(records) < len(reference):
+            parser.exit(
+                2,
+                f"Error: la ventana actual ({len(records)} informes) es menor que la referencia "
+                f"({len(reference)}); no se reduce para no generar avisos falsos después.\n",
+            )
+        try:
+            detector.write_reference(reference_path, records, now=datetime.now(UTC))
+        except OSError as exc:
+            parser.exit(1, f"Error al guardar la referencia: {_local_failure(exc)}\n")
         print(
             f"Referencia actualizada: {reference_path} ({len(records)} informes).", file=sys.stderr
         )
@@ -949,7 +968,9 @@ def _update(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """Plano local: sincroniza según la política de acceso, procesa e indexa. Cada paso conserva
     su protección (snapshot atómico, caché verificada, índice anterior ante fallos)."""
     root = _data_dir(args)
+    _max_reports(parser, args)  # errores de uso antes de cualquier operación
     steps = []
+    degraded = False
     if not args.sin_sincronizar:
         sync_args = argparse.Namespace(
             **{**vars(args), "command": "sincronizar", "fuente": None, "dry_run": False}
@@ -958,13 +979,17 @@ def _update(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             _run_sync(parser, sync_args)
             steps.append("sincronización")
         except SystemExit as exc:
-            if exc.code not in (0, None) and not args.continuar_si_falla:
+            if exc.code in (0, None):
+                steps.append("sincronización")
+            elif not args.continuar_si_falla:
                 raise
-            print(
-                "Aviso: la sincronización no se completó; se continúa con el catálogo activo "
-                "(no equivale a los últimos informes publicados).",
-                file=sys.stderr,
-            )
+            else:
+                degraded = True
+                print(
+                    "Aviso: la sincronización no se completó; se continúa con el catálogo activo "
+                    "(no equivale a los últimos informes publicados).",
+                    file=sys.stderr,
+                )
     _process(parser, argparse.Namespace(data_dir=str(root), forzar=False, procesos=args.procesos,
                                         json=False))  # fmt: skip
     steps.append("procesamiento")
@@ -972,6 +997,10 @@ def _update(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                                       modelo_embeddings=args.modelo_embeddings,
                                       sin_embeddings=args.sin_embeddings, json=False))  # fmt: skip
     steps.append("indexación")
+    if degraded:
+        # Código 3: el índice quedó al día con el catálogo activo, pero la fuente no se sincronizó.
+        print(f"Actualización parcial: {', '.join(steps)}; la sincronización falló.")
+        parser.exit(3, "")
     print(f"Actualización completada: {', '.join(steps)}.")
 
 

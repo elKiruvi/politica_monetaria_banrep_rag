@@ -173,5 +173,54 @@ def test_update_continues_with_active_catalog_only_when_asked(monkeypatch, capsy
     calls.clear()
     code, out, err = run_cli(monkeypatch, capsys, "actualizar", "--continuar-si-falla",
                              "--sin-embeddings", "--data-dir", str(tmp_path))  # fmt: skip
-    assert code == 0 and calls == ["sync", "process", "index"]
-    assert "no equivale a los últimos informes" in err and "procesamiento, indexación" in out
+    assert code == 3 and calls == ["sync", "process", "index"]  # resultado degradado
+    assert "no equivale a los últimos informes" in err and "Actualización parcial" in out
+    calls.clear()
+    code, _, err = run_cli(monkeypatch, capsys, "actualizar", "--max-reports", "abc",
+                           "--continuar-si-falla", "--data-dir", str(tmp_path))  # fmt: skip
+    assert code == 2 and calls == []  # error de uso antes de cualquier operación
+
+
+def test_period_change_and_combined_fields_are_reported(reference):
+    known = detector.load_reference(reference)
+    current = [
+        record("2026-07", reference_period="2026-08"),
+        record("2026-04", download_url="https://repositorio.banrep.gov.co/x.pdf", title="otro"),
+    ]
+    result, _ = detector.detect(Source(current), known, now=NOW)
+    fields = {c.report_id: (c.kind, c.fields) for c in result.changes}
+    assert fields["ipm-2026-07"] == ("correccion_metadatos", ("reference_period",))
+    assert fields["ipm-2026-04"] == ("documento_actualizado", ("download_url", "title"))
+
+
+@pytest.mark.parametrize("code,status", [("404", "respuesta_ambigua"), ("301", "respuesta_ambigua"),
+                                         ("429", "fuente_no_disponible"),
+                                         ("502", "fuente_no_disponible")])  # fmt: skip
+def test_http_errors_are_classified_by_status(code, status):
+    error = SourceError(f"Crossref respondió HTTP {code}.")
+    assert detector.detect(Source(error=error), {}, now=NOW)[0].status == status
+
+
+def test_reference_rejects_duplicates_and_non_objects(tmp_path):
+    path = tmp_path / "r.json"
+    item = {"report_id": "ipm-2026-07"}
+    path.write_text(json.dumps({"version": 1, "reports": [item, item]}))
+    with pytest.raises(ValueError, match="repetido"):
+        detector.load_reference(path)
+    path.write_text("[]")
+    with pytest.raises(ValueError):
+        detector.load_reference(path)
+
+
+def test_cli_refuses_missing_reference_and_shrinking_it(monkeypatch, capsys, tmp_path, reference):
+    from politica_monetaria_banrep_rag import cli
+
+    source = Source([record("2026-07")])
+    monkeypatch.setattr(cli, "CrossrefReportSource", lambda contact_email=None: source)
+    code, _, err = run_cli(monkeypatch, capsys, "detectar", "--referencia",
+                           str(tmp_path / "no-existe.json"))  # fmt: skip
+    assert code == 2 and "créela con" in err
+    code, _, err = run_cli(monkeypatch, capsys, "detectar", "--referencia", str(reference),
+                           "--actualizar-referencia")  # fmt: skip
+    assert code == 2 and "menor que la referencia" in err
+    assert len(detector.load_reference(reference)) == 2  # sin cambios
