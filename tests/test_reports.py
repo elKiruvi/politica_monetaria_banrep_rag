@@ -211,3 +211,20 @@ def test_cli_shows_result_even_if_saving_the_report_fails(indexed, monkeypatch, 
                              "--data-dir", str(indexed), "--exportar", target)  # fmt: skip
     assert code == 1 and "3,5 % [E1]" in out and "el resultado ya se mostró" in err
     assert not list(tmp_path.glob(".reporte-*"))
+
+
+def test_citation_markers_cannot_become_links():
+    from politica_monetaria_banrep_rag.reports import _md
+
+    assert _md("[E1]: https://evil.example/phish") == "\\[E1\\]: https://evil.example/phish"
+    linked = _md("bajó [E1](https://evil.example/x) según [E1].")
+    assert "[E1](" not in linked and linked.endswith("según [E1].")
+    assert _md("1. dato") == "1\\. dato" and _md("- dato") == "\\- dato"
+
+
+def test_acquisition_is_unknown_when_it_cannot_be_deduced():
+    from politica_monetaria_banrep_rag.reports import _STATES, _acquisition
+
+    assert _acquisition(_STATES["local_import"]) == "importación local"
+    assert _acquisition(_STATES["verified"]) == "descarga oficial"
+    assert _acquisition(_STATES["fuera_del_catalogo"]) == "—" and _acquisition(None) == "—"

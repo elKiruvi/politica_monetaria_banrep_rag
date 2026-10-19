@@ -118,9 +118,10 @@ def _citations_title(answer: Answer) -> str:
 
 def _acquisition(state: str | None) -> str:
     """Las citas no llevan el método de adquisición; se deduce del estado de vigencia."""
-    if state is None:
-        return "—"
-    return "importación local" if state == _STATES["local_import"] else "descarga oficial"
+    if state == _STATES["local_import"]:
+        return "importación local"
+    downloaded = {_STATES[key] for key in ("verified", "revalidation_pending", "snapshot_outdated")}
+    return "descarga oficial" if state in downloaded else "—"
 
 
 def _unique(items: list[str]) -> tuple[str, ...]:
@@ -324,8 +325,15 @@ def _md(text: str) -> str:
     """Una sola línea con el marcado de Markdown escapado: un texto del modelo o de los PDF no
     puede crear encabezados, enlaces ni HTML en el reporte."""
     escaped = _MD_SPECIAL.sub(r"\\\1", " ".join(str(text).split()))
-    # Las marcas de cita «[E1]» no forman enlaces sin «(…)», que sí queda escapado.
-    return re.sub(r"\\\[(E\d+(?:, ?E\d+)*)\\\]", r"[\1]", escaped)
+    # Las marcas de cita «[E1]» se conservan solo si no van seguidas de «(», «:» o «[»: así no
+    # pueden formar enlaces en línea ni definiciones de referencia.
+    escaped = re.sub(r"\\\[(E\d+(?:, ?E\d+)*)\\\](?![(:\[])", r"[\1]", escaped)
+    # Un número o guion al inicio formaría una lista.
+    return re.sub(
+        r"^(\d+)([.)])|^([-+])",
+        lambda m: (m.group(1) or "") + "\\" + (m.group(2) or m.group(3)),
+        escaped,
+    )
 
 
 def _md_cell(text: str) -> str:

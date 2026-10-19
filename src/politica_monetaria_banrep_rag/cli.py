@@ -620,6 +620,9 @@ def _export(parser: argparse.ArgumentParser, args: argparse.Namespace, build) ->
         fd, tmp_name = tempfile.mkstemp(prefix=".reporte-", suffix=".tmp", dir=target.parent)
         with os.fdopen(fd, "wb") as handle:
             handle.write(data)
+        umask = os.umask(0)  # mkstemp crea 0600; el reporte usa los permisos habituales
+        os.umask(umask)
+        os.chmod(tmp_name, 0o666 & ~umask)
         if target.is_symlink():
             raise IsADirectoryError(f"{target} es un enlace simbólico")
         os.replace(tmp_name, target)
