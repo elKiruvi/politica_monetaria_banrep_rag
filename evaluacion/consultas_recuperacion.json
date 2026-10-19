@@ -1,0 +1,575 @@
+{
+  "version": 1,
+  "description": "Consultas iniciales de F5 con juicios verificados manualmente sobre los cinco informes importados (2025-01, 2025-04, 2025-07, 2025-10 y 2026-01). Páginas físicas del PDF, 1-indexadas. 'contains' es texto literal del informe que debe aparecer en el fragmento recuperado. Los juicios se completaron con pooling: se revisaron a mano los primeros resultados de la búsqueda léxica y se añadieron los pasajes relevantes que no estaban (grado 1 si solo apoyan la respuesta).",
+  "queries": [
+    {
+      "id": "q01",
+      "category": "proyeccion_inflacion",
+      "query": "¿Cuál fue la proyección de inflación para finales de 2025?",
+      "filters": {
+        "report_ids": [
+          "ipm-2025-07"
+        ]
+      },
+      "relevant": [
+        {
+          "report_id": "ipm-2025-07",
+          "pages": [
+            18
+          ],
+          "contains": "4,7 % para finales de 2025",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-07",
+          "pages": [
+            9
+          ],
+          "contains": "A finales de 2025 la inflación total terminaría en el 4,7 %",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-07",
+          "pages": [
+            49
+          ],
+          "contains": "IPC total c/",
+          "grade": 1
+        }
+      ]
+    },
+    {
+      "id": "q02",
+      "category": "proyeccion_inflacion",
+      "query": "proyección de la inflación total para el cierre de 2025",
+      "relevant": [
+        {
+          "report_id": "ipm-2025-01",
+          "pages": [
+            17
+          ],
+          "contains": "4,1 % para el cierre de 2025",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-04",
+          "pages": [
+            18,
+            19
+          ],
+          "contains": "4,4 % para el cierre de 2025",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-07",
+          "pages": [
+            18
+          ],
+          "contains": "4,7 % para finales de 2025",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-07",
+          "pages": [
+            9
+          ],
+          "contains": "terminaría en el 4,7 %",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "q03",
+      "category": "expectativas",
+      "query": "¿Qué informó el Banco sobre las expectativas de inflación de los analistas?",
+      "relevant": [
+        {
+          "report_id": "ipm-2025-01",
+          "pages": [
+            19
+          ],
+          "contains": "Las expectativas de los analistas económicos",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-04",
+          "pages": [
+            20,
+            21
+          ],
+          "contains": "Las expectativas de los analistas económicos",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-07",
+          "pages": [
+            20
+          ],
+          "contains": "Las expectativas de los analistas económicos",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-10",
+          "pages": [
+            20
+          ],
+          "contains": "Las expectativas de los analistas económicos",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2026-01",
+          "pages": [
+            20,
+            21
+          ],
+          "contains": "Las expectativas de los analistas económicos",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-01",
+          "pages": [
+            56
+          ],
+          "contains": "Anexo 1 Proyecciones macroeconómicas de analistas locales y extranjeros",
+          "grade": 1
+        },
+        {
+          "report_id": "ipm-2025-04",
+          "pages": [
+            49
+          ],
+          "contains": "Anexo 1 Proyecciones macroeconómicas de analistas locales y extranjeros",
+          "grade": 1
+        },
+        {
+          "report_id": "ipm-2025-07",
+          "pages": [
+            47
+          ],
+          "contains": "Anexo 1 Proyecciones macroeconómicas de analistas locales y extranjeros",
+          "grade": 1
+        },
+        {
+          "report_id": "ipm-2025-10",
+          "pages": [
+            46
+          ],
+          "contains": "Anexo 1 Proyecciones macroeconómicas de analistas locales y extranjeros",
+          "grade": 1
+        },
+        {
+          "report_id": "ipm-2026-01",
+          "pages": [
+            48
+          ],
+          "contains": "Anexo 1 Proyecciones macroeconómicas de analistas locales y extranjeros",
+          "grade": 1
+        }
+      ]
+    },
+    {
+      "id": "q04",
+      "category": "riesgos",
+      "query": "¿Qué riesgos externos se destacaron en octubre de 2025?",
+      "filters": {
+        "report_ids": [
+          "ipm-2025-10"
+        ]
+      },
+      "relevant": [
+        {
+          "report_id": "ipm-2025-10",
+          "pages": [
+            27
+          ],
+          "contains": "Los riesgos alcistas sobre la prima de riesgo soberano y la inflación externa persisten",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-10",
+          "pages": [
+            26,
+            27
+          ],
+          "contains": "Los riesgos que enfrenta el pronóstico macroeconómico siguen siendo significativos",
+          "grade": 1
+        },
+        {
+          "report_id": "ipm-2025-10",
+          "pages": [
+            12,
+            13
+          ],
+          "contains": "los riesgos para el crecimiento mundial se inclinan a la baja",
+          "grade": 1
+        }
+      ]
+    },
+    {
+      "id": "q05",
+      "category": "cuadro",
+      "query": "¿Qué dice el Cuadro 2.1 sobre el crecimiento?",
+      "relevant": [
+        {
+          "report_id": "ipm-2025-01",
+          "pages": [
+            13
+          ],
+          "contains": "Cuadro 2.1 Proyecciones de crecimiento de los socios comerciales",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-04",
+          "pages": [
+            14
+          ],
+          "contains": "Cuadro 2.1 Proyecciones de crecimiento de los socios comerciales",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-07",
+          "pages": [
+            14
+          ],
+          "contains": "Cuadro 2.1 Proyecciones de crecimiento de los socios comerciales",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-10",
+          "pages": [
+            13
+          ],
+          "contains": "Cuadro 2.1 Proyecciones de crecimiento de los socios comerciales",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2026-01",
+          "pages": [
+            13
+          ],
+          "contains": "Cuadro 2.1 Proyecciones de crecimiento de los socios comerciales",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-01",
+          "pages": [
+            12,
+            13
+          ],
+          "contains": "(Cuadro 2.1)",
+          "grade": 1
+        },
+        {
+          "report_id": "ipm-2025-04",
+          "pages": [
+            13,
+            14
+          ],
+          "contains": "(Cuadro 2.1)",
+          "grade": 1
+        },
+        {
+          "report_id": "ipm-2025-07",
+          "pages": [
+            13
+          ],
+          "contains": "(Cuadro 2.1)",
+          "grade": 1
+        },
+        {
+          "report_id": "ipm-2025-10",
+          "pages": [
+            12
+          ],
+          "contains": "(Cuadro 2.1)",
+          "grade": 1
+        },
+        {
+          "report_id": "ipm-2026-01",
+          "pages": [
+            12,
+            13
+          ],
+          "contains": "(Cuadro 2.1)",
+          "grade": 1
+        }
+      ]
+    },
+    {
+      "id": "q06",
+      "category": "petroleo",
+      "query": "¿Qué información existe sobre el precio del petróleo?",
+      "relevant": [
+        {
+          "report_id": "ipm-2025-01",
+          "pages": [
+            13,
+            14
+          ],
+          "contains": "El supuesto del precio del petróleo se revisó a la baja",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-04",
+          "pages": [
+            14,
+            15
+          ],
+          "contains": "precio del petróleo para la referencia Brent se redujo a USD 67",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-07",
+          "pages": [
+            14
+          ],
+          "contains": "El supuesto del precio del petróleo se revisó marginalmente al alza",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-10",
+          "pages": [
+            13,
+            14
+          ],
+          "contains": "tendencia decreciente del precio del petróleo",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2026-01",
+          "pages": [
+            13,
+            14
+          ],
+          "contains": "El precio del petróleo continuaría reduciéndose en 2026",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "q07",
+      "category": "tasa_politica",
+      "query": "decisión de la Junta Directiva sobre la tasa de política monetaria",
+      "filters": {
+        "report_ids": [
+          "ipm-2025-10"
+        ]
+      },
+      "relevant": [
+        {
+          "report_id": "ipm-2025-10",
+          "pages": [
+            38
+          ],
+          "contains": "decidió mantener la TPM en el 9,25 %",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-10",
+          "pages": [
+            11
+          ],
+          "contains": "decidió por mayoría mantener la tasa de interés de política monetaria en el 9,25 %",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "q08",
+      "category": "paginas",
+      "query": "¿En qué página están las proyecciones de inflación?",
+      "filters": {
+        "report_ids": [
+          "ipm-2025-04"
+        ]
+      },
+      "relevant": [
+        {
+          "report_id": "ipm-2025-04",
+          "pages": [
+            18,
+            19
+          ],
+          "contains": "4,4 % para el cierre de 2025",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-04",
+          "pages": [
+            51
+          ],
+          "contains": "IPC total c/",
+          "grade": 1
+        }
+      ]
+    },
+    {
+      "id": "q09",
+      "category": "cuadro",
+      "query": "crecimiento proyectado de Estados Unidos en el Cuadro 2.1",
+      "filters": {
+        "report_ids": [
+          "ipm-2025-10"
+        ]
+      },
+      "relevant": [
+        {
+          "report_id": "ipm-2025-10",
+          "pages": [
+            13
+          ],
+          "contains": "Estados Unidos — 2023 (pr): 2,9; 2024 (proy): 2,8; 2025 (proy): 1,7",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "q10",
+      "category": "proyeccion_inflacion",
+      "query": "rango de la inflación con 90 % de probabilidad al final de 2025",
+      "relevant": [
+        {
+          "report_id": "ipm-2025-01",
+          "pages": [
+            27
+          ],
+          "contains": "90 % de probabilidad la inflación total se situaría en un rango entre el 2,2 % y 6,8 %",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-04",
+          "pages": [
+            29
+          ],
+          "contains": "entre el 2,8 % y 6,4 % al final de 2025",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "q11",
+      "category": "cuadro",
+      "query": "Cuadro 3.1 tasas de interés promedio mensual",
+      "relevant": [
+        {
+          "report_id": "ipm-2025-01",
+          "pages": [
+            37
+          ],
+          "contains": "Cuadro 3.1 Tasas de interés",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-04",
+          "pages": [
+            39
+          ],
+          "contains": "Cuadro 3.1 Tasas de interés",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-07",
+          "pages": [
+            39
+          ],
+          "contains": "Cuadro 3.1 Tasas de interés",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2025-10",
+          "pages": [
+            38
+          ],
+          "contains": "Cuadro 3.1 Tasas de interés",
+          "grade": 2
+        },
+        {
+          "report_id": "ipm-2026-01",
+          "pages": [
+            39
+          ],
+          "contains": "Cuadro 3.1 Tasas de interés",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "q12",
+      "category": "recuadro",
+      "query": "efectos macroeconómicos del aumento del salario mínimo",
+      "filters": {
+        "report_ids": [
+          "ipm-2026-01"
+        ]
+      },
+      "relevant": [
+        {
+          "report_id": "ipm-2026-01",
+          "pages": [
+            40
+          ],
+          "contains": "Este recuadro cuantifica los efectos potenciales del incremento real del salario mínimo",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "q13",
+      "category": "expectativas",
+      "query": "expectativas de inflación a dos y cinco años",
+      "filters": {
+        "report_ids": [
+          "ipm-2025-07"
+        ]
+      },
+      "relevant": [
+        {
+          "report_id": "ipm-2025-07",
+          "pages": [
+            21
+          ],
+          "contains": "A dos y cinco años las medianas de las expectativas para la inflación total",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "q14",
+      "category": "inflacion_basica",
+      "query": "proyección de inflación básica sin alimentos ni regulados para 2025",
+      "filters": {
+        "report_ids": [
+          "ipm-2025-07"
+        ]
+      },
+      "relevant": [
+        {
+          "report_id": "ipm-2025-07",
+          "pages": [
+            49
+          ],
+          "contains": "Indicadores de inflación básica f/ > IPC sin alimentos ni regulados",
+          "grade": 2
+        }
+      ]
+    },
+    {
+      "id": "n01",
+      "category": "sin_respuesta",
+      "query": "precio de las acciones de Ecopetrol en la bolsa",
+      "relevant": []
+    },
+    {
+      "id": "n02",
+      "category": "sin_respuesta",
+      "query": "cotización del bitcoin",
+      "relevant": []
+    },
+    {
+      "id": "n03",
+      "category": "sin_respuesta",
+      "query": "tasa de desempleo de Argentina en 2030",
+      "relevant": []
+    }
+  ]
+}
