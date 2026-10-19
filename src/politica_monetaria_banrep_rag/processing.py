@@ -14,7 +14,7 @@ from pathlib import Path
 from politica_monetaria_banrep_rag.layout import PARSER_VERSION, Block, PageLayout, extract_layout
 from politica_monetaria_banrep_rag.tables import Table, TableError, build_tables
 
-PROCESSING_VERSION = f"{PARSER_VERSION}+unidades-2"
+PROCESSING_VERSION = f"{PARSER_VERSION}+unidades-3"
 _EXCLUDED = {"toc", "running_header", "page_number", "chart_residue", "small_text"}
 _CHART_NOTE = "Los datos del gráfico no se extraen (fuera de alcance); solo su título y fuente."
 CRITICAL_SECTIONS = {"1": "Resumen", "2": "Pronósticos", "3": "Situación económica"}
@@ -173,9 +173,11 @@ def _region_units(
     return units, len(tables), [], caption
 
 
-def _last_paragraph(units: list[Unit], section: tuple[str, ...]) -> int | None:
-    """Índice del último párrafo; los gráficos, cuadros y notas intermedios no lo interrumpen."""
+def _last_paragraph(units: list[Unit], section: tuple[str, ...], page: int) -> int | None:
+    """Un cuadro interpuesto en esta página corta el texto; una barra lateral previa no."""
     for index in range(len(units) - 1, -1, -1):
+        if units[index].kind in {"table", "table_raw"} and units[index].page == page:
+            return None
         if units[index].kind == "paragraph":
             return index if units[index].section == section else None
     return None
@@ -279,7 +281,7 @@ def process_pdf(path: Path, report_id: str, sha256: str) -> ProcessedDocument:
                     if block.kind in {"footnote", "source_note", "caption"}
                     else "paragraph"
                 )
-                previous = _last_paragraph(units, section)
+                previous = _last_paragraph(units, section, page.number)
                 if (
                     kind == "paragraph"
                     and previous is not None

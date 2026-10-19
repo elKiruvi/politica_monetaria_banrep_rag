@@ -4,7 +4,7 @@ import pytest
 from pdf_factory import make_layout_pdf
 from test_layout import annex_page, page_one, page_two, toc_page
 
-from politica_monetaria_banrep_rag.chunking import chunk_document
+from politica_monetaria_banrep_rag.chunking import ChunkingError, chunk_document
 from politica_monetaria_banrep_rag.cli import main
 from politica_monetaria_banrep_rag.processing import ProcessedDocument, Unit, process_pdf
 from politica_monetaria_banrep_rag.tables import Cell, Row, Table
@@ -111,6 +111,142 @@ def test_invalid_chunk_size():
         chunk_document(make_document([]), max_chars=100)
 
 
+def test_chunks_do_not_merge_across_pages_sections_or_tables():
+    table = Table(
+        "Cuadro 1", 2, "", ("Concepto",), ("2025",),
+        (Row(("Variable",), (Cell("1,2", False),)),), (), False,
+    )  # fmt: skip
+    units = [
+        Unit("paragraph", "Before page boundary.", 1, "1", ("1. Resumen",)),
+        Unit("paragraph", "Before table.", 2, "2", ("1. Resumen",)),
+        Unit("table", table.to_text(), 2, "2", ("1. Resumen",), table),
+        Unit("paragraph", "After table.", 2, "2", ("1. Resumen",)),
+        Unit("paragraph", "New section.", 2, "2", ("2. Pronósticos",)),
+    ]
+    chunks = chunk_document(make_document(units))
+    assert [c.text for c in chunks if c.kind == "paragraph"] == [
+        "Before page boundary.",
+        "Before table.",
+        "After table.",
+        "New section.",
+    ]
+    assert [(c.page_start, c.page_end) for c in chunks[:2]] == [(1, 1), (2, 2)]
+
+
+def test_long_unpunctuated_paragraph_keeps_words_and_numeric_unit_together():
+    words = ["context"] * 48 + ["5,1", "%"] + ["outlook"] * 60
+    chunks = chunk_document(
+        make_document([Unit("paragraph", " ".join(words), 1, "1", ("Resumen",))]),
+        max_chars=400,
+    )
+    assert len(chunks) > 2 and all(len(c.text) <= 400 for c in chunks)
+    assert " ".join(c.text for c in chunks) == " ".join(words)
+    assert any("5,1 %" in c.text for c in chunks)
+
+    boundary = "x" * 395 + " 5,1 % " + "outlook " * 60
+    pieces = chunk_document(
+        make_document([Unit("paragraph", boundary, 1, "1", ("Resumen",))]), max_chars=400
+    )
+    assert pieces[0].text == "x" * 395
+    assert pieces[1].text.startswith("5,1 %")
+
+
+@pytest.mark.parametrize(
+    "unit,prefix_length",
+    [
+        ("millones de dólares", 289),
+        ("Dólares", 289),
+        ("pesos por dólar", 289),
+        ("% del PIB", 287),
+        ("puntos porcentuales", 289),
+    ],
+)
+def test_numeric_scale_stays_with_its_value_across_word_boundary(unit, prefix_length):
+    text = "x" * prefix_length + f" 5,1 {unit} " + "outlook " * 45
+    chunks = chunk_document(
+        make_document([Unit("paragraph", text, 1, "1", ("Resumen",))]), max_chars=300
+    )
+    assert any(f"5,1 {unit}" in chunk.text for chunk in chunks)
+    assert all(len(chunk.text) <= 300 for chunk in chunks)
+
+
+def test_unbreakable_token_raises_typed_error():
+    unit = Unit("paragraph", "x" * 401, 1, "1", ("Resumen",))
+    with pytest.raises(ChunkingError, match="Unbreakable token"):
+        chunk_document(make_document([unit]), max_chars=400)
+
+
+def test_oversized_table_row_fails_instead_of_orphaning_cells():
+    table = Table(
+        "Cuadro 1", 2, "", ("Concepto",), ("2025",),
+        (Row(("Short",), (Cell("1,2", False),)),
+         Row(("Large " + "x" * 340,), (Cell("3,4", False),))), (), False,
+    )  # fmt: skip
+    unit = Unit("table", table.to_text(), 2, "2", ("Resumen",), table)
+    with pytest.raises(ChunkingError, match="Table row on page 2 requires"):
+        chunk_document(make_document([unit]), max_chars=300)
+
+
+def test_short_notes_that_do_not_fit_get_a_linked_full_chunk():
+    note = "Note: " + "details " * 30
+    table = Table(
+        "Cuadro 1", 2, "", ("Concepto",), ("2025",),
+        (Row(("Variable",), (Cell("1,2", False),)),), (note,), False,
+    )  # fmt: skip
+    chunks = chunk_document(make_document([Unit("table", table.to_text(), 2, "2", (), table)]),
+                            max_chars=300)  # fmt: skip
+    table_chunk, notes_chunk = chunks
+    assert table_chunk.attributed_cells[0].value == "1,2"
+    assert notes_chunk.kind == "table_notes" and notes_chunk.evidence_quality == "note_only"
+    assert notes_chunk.attributed_cells == ()
+    assert table_chunk.table_id == notes_chunk.table_id and table_chunk.table_id is not None
+    assert note.strip() == notes_chunk.text.removeprefix("Cuadro 1 — notas: ").strip()
+    assert all(len(c.text) <= 300 for c in chunks)
+
+
+def test_identical_table_captions_have_distinct_note_links():
+    notes = ("Long note " * 45,)
+    table = Table(
+        "Cuadro repetido", 1, "", ("Concepto",), ("2025",),
+        (Row(("Variable",), (Cell("1,2", False),)),), notes, False,
+    )  # fmt: skip
+    units = [Unit("table", table.to_text(), 1, "1", (), table) for _ in range(2)]
+    chunks = chunk_document(make_document(units), max_chars=300)
+    identifiers = [c.table_id for c in chunks if c.kind == "table"]
+    assert len(identifiers) == 2 and identifiers[0] != identifiers[1]
+    assert {c.table_id for c in chunks if c.kind == "table_notes"} == set(identifiers)
+    assert all(len(c.text) <= 300 for c in chunks)
+
+
+def test_long_note_excerpt_never_displays_incomplete_scale():
+    note = "Context " * 49 + "5,1 millones de dólares"
+    table = Table(
+        "Cuadro 1", 1, "", ("Concepto",), ("2025",),
+        (Row(("Variable",), (Cell("1,2", False),)),), (note,), False,
+    )  # fmt: skip
+    chunks = chunk_document(make_document([Unit("table", table.to_text(), 1, "1", (), table)]),
+                            max_chars=300)  # fmt: skip
+    table_chunk = next(c for c in chunks if c.kind == "table")
+    notes_chunks = [c for c in chunks if c.kind == "table_notes"]
+    assert "notas completas aparte" in table_chunk.text and "5,1" not in table_chunk.text
+    assert " ".join(c.text.removeprefix("Cuadro 1 — notas: ") for c in notes_chunks) == note
+    assert all(c.table_id == table_chunk.table_id for c in notes_chunks)
+
+
+def test_processing_does_not_join_paragraphs_around_a_table(tmp_path):
+    path = tmp_path / "intervening-table.pdf"
+    path.write_bytes(make_layout_pdf([page_one() + [
+        (291, 400, 10, "mantener 5,1 % al cierre.", "R")
+    ]]))  # fmt: skip
+    document = process_pdf(path, "ipm-2025-10", "0" * 64)
+    kinds = [u.kind for u in document.units]
+    table_index = kinds.index("table")
+    assert any(u.kind == "paragraph" and u.text.startswith("mantener 5,1 %")
+               for u in document.units[table_index + 1:])  # fmt: skip
+    chunks = chunk_document(document)
+    assert not any("tensiones comerciales mantener" in c.text for c in chunks)
+
+
 def test_cli_procesar_uses_active_catalog_and_cache(tmp_path, report_pdf, capsys, monkeypatch):
     from test_importer import write
 
@@ -210,6 +346,9 @@ def test_long_table_notes_get_their_own_chunk():
     assert notes_chunks and notes_chunks[0].text.startswith("Anexo 1 Proyecciones — notas:")
     joined = " ".join(c.text for c in notes_chunks)
     assert joined.count("superávit") == 12
+    assert all(c.table_id == chunks[0].table_id for c in notes_chunks)
+    assert all(c.text.startswith("Anexo 1 Proyecciones — notas:") for c in notes_chunks)
+    assert all(len(c.text) <= 600 for c in chunks)
 
 
 def test_sentences_are_not_cut_after_abbreviations():

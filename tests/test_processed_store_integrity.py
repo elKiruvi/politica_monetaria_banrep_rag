@@ -129,7 +129,9 @@ def test_reuse_versions_and_legacy_file_survives(prepared):
     assert not failures and not summaries[0].cached and target.exists()
 
 
-@pytest.mark.parametrize("change", ["unit", "table", "chunk", "attributed_cells", "coverage"])
+@pytest.mark.parametrize(
+    "change", ["unit", "table", "chunk", "attributed_cells", "table_id", "coverage"]
+)
 def test_recalculated_checksum_cannot_promote_unattributed_evidence(prepared_evidence, change):
     store, records, target = prepared_evidence
     content = json.loads(target.read_text())
@@ -159,6 +161,8 @@ def test_recalculated_checksum_cannot_promote_unattributed_evidence(prepared_evi
                 "projection_or_assumption": False,
             }
         ]
+    elif change == "table_id":
+        next(chunk for chunk in chunks if chunk["kind"] == "table")["table_id"] = "0" * 32
     else:
         document["quality"]["critical_sections"]["2"]["covered"] = False
     content["payload_sha256"] = _payload_digest(content)

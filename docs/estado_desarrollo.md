@@ -1,4 +1,4 @@
-# Estado del desarrollo — checkpoint F4–H3
+# Estado del desarrollo — checkpoint H4–H5
 
 **Fecha inicial:** 16 de octubre de 2026; actualización H3: 18 de octubre de 2026. **`main` verificada al retomar:** `2175077556b56c8ea6a689c1565485268288b69d`; CI aprobado, árbol limpio, sin PR abiertos. **Próxima fase:** completar H4–H5 antes de activar F5.
 
@@ -57,7 +57,7 @@ ADR 0001 (aislamiento del repo original) · 0002 (pypdf para validar) · 0003 (s
 - H1 (#27) fusionada mediante PR #32 a `main` `34c3786b6bf2eab2dd08744926dbb8b74a1268b9`; CI post-merge aprobado (run 38999188560). Revisión independiente: dos fallos medios de arranque/cola corregidos, sin altos/medios restantes. 339 pruebas offline aprobadas, 1 omitida. Windows/macOS y descarga real siguen sin verificar.
 - H2 (#28, PR #33): firma de caché nueva, verificación del PDF incluso en aciertos, ruta segura, fragmentos reconstruidos desde unidades, calidad coherente, bloqueo de escritores y reconstrucción controlada. La revisión independiente final no encontró fallos altos ni medios; el PR conserva los checks y su estado de fusión. En copia temporal de los cinco PDF reales se produjeron 1.851 fragmentos con los conteos F4; segunda pasada: cinco aciertos tras las últimas correcciones. No son los 12 informes más recientes ni se probó una descarga. Un SHA guardado en el JSON no autentica las unidades contra el PDF.
 - H3 (#29): intentos de revalidación separados de snapshots, plazo persistido, comprobación del PDF local y frescura efectiva en `estado` (texto y JSON), incluso tras una sincronización incompleta; compatibilidad con snapshots v1/v2. La revisión independiente final no encontró fallos altos ni medios; 396 pruebas offline aprobadas y 1 omitida. ADR 0003. Esto no demuestra N=12 ni que la fuente esté accesible hoy.
-- H4 (#30): calidad por cuadro/unidad/fragmento, cobertura de capítulos críticos y celdas atribuibles solo desde filas/columnas estructuradas; golden local con páginas 14 y 53 de abril de 2025 (ADR 0006). H5 (#31): notas y límites del fragmentador pendientes. F5 (#6) sigue sin índice; F6–F10 permanecen pendientes. No publicar índice hasta cumplir las políticas críticas.
+- H4 (#30, PR #35) fusionada a `main` (`8ee69e9`): calidad por cuadro/unidad/fragmento, cobertura de capítulos críticos y celdas atribuibles solo desde filas/columnas visibles y estructuradas; CI del head y post-merge aprobado. Golden local abril/julio de 2025 (ADR 0006). H5 (#31) implementa límites y vínculos de notas en una rama separada; hasta fusionarla no está habilitada F5 (#6). F6–F10 permanecen pendientes. No publicar índice antes de cumplir las políticas críticas.
 
 ## Cómo retomar
 
@@ -66,4 +66,4 @@ git switch main && git pull --ff-only
 uv sync --frozen && uv run --frozen pytest -q
 uv run --frozen banrep-rag estado --data-dir data/catalogo
 ```
-Leer `CLAUDE.md` y las ADR; continuar con #30 (H4), luego #31 (H5). No activar #6 (F5) antes de cerrar esos controles.
+Leer `CLAUDE.md` y las ADR; revisar y fusionar #31 (H5) con CI del SHA vigente antes de activar #6 (F5).
