@@ -158,6 +158,7 @@ class Answer:
     citations: tuple[Citation, ...] = ()
     evidence: tuple[Citation, ...] = ()
     reason: str | None = None
+    added_citations: tuple[str, ...] = ()  # fuentes que agregó la verificación, no el modelo
 
 
 def _neutralize(text: str) -> str:
@@ -234,16 +235,33 @@ def _evidence_numbers(text: str) -> set[str]:
     return found | {number.lstrip("-") for number in found}
 
 
+def _block_numbers(text: str) -> set[str]:
+    return _evidence_numbers(text) | {f"20{year}" for year in _MONTH_YEAR.findall(text)}
+
+
+def model_citations(result: dict[str, object]) -> list[str]:
+    """Etiquetas que el propio modelo citó (en el texto o en la lista)."""
+    answer = result.get("answer")
+    listed = result.get("citations")
+    text = answer if isinstance(answer, str) else ""
+    items = listed if isinstance(listed, list) else []
+    in_text = [lab for group in _CITATION.findall(text) for lab in re.findall(r"E\d+", group)]
+    return list(dict.fromkeys([*in_text, *(str(c).strip("[] ") for c in items)]))
+
+
 def verify(
     result: dict[str, object],
     labels: dict[str, str],
     question: str,
     pages: dict[str, set[int]] | None = None,
+    *,
+    scope: str = "cited",
 ) -> tuple[str, str, list[str], str | None]:
     """Comprueba la salida del modelo; devuelve (estado, texto, citas, motivo).
 
     ``pages`` son las páginas (físicas e impresas) de cada bloque: un número precedido de «pág.»
-    se acepta solo si es una página de la evidencia citada."""
+    se acepta solo si es una página de la evidencia citada. Con ``scope="all"`` (resúmenes) una
+    cifra de un bloque revisado y no citado se acepta agregando ese bloque a las citas."""
     answer = result.get("answer")
     citations = result.get("citations")
     insufficient = result.get("insufficient_evidence")
@@ -256,8 +274,7 @@ def verify(
         return "rejected", "", [], "El modelo devolvió una respuesta con formato inválido."
     if insufficient:
         return "insufficient_evidence", "", [], "El modelo indicó que la evidencia no basta."
-    in_text = [label for group in _CITATION.findall(answer) for label in re.findall(r"E\d+", group)]
-    cited = list(dict.fromkeys([*in_text, *(c.strip("[] ") for c in citations)]))
+    cited = model_citations(result)
     unknown = [label for label in cited if label not in labels]
     if unknown:
         return "rejected", "", [], f"El modelo citó evidencia inexistente: {', '.join(unknown)}."
@@ -278,9 +295,17 @@ def verify(
     # De la pregunta solo se admiten años: una cifra de la premisa no se confirma sin evidencia.
     allowed = {n for n in _numbers(question) if _YEAR.match(n)}
     for label in cited:
-        allowed |= _evidence_numbers(labels[label])
-        allowed |= {f"20{year}" for year in _MONTH_YEAR.findall(labels[label])}
+        allowed |= _block_numbers(labels[label])
     unverified = sorted(_numbers(body) - allowed)
+    if unverified and scope == "all":
+        # Resúmenes: una cifra de un bloque revisado pero no citado se acepta solo si ese bloque
+        # se agrega a las citas, de modo que toda cifra tenga su fuente visible.
+        for number in list(unverified):
+            source = next((lab for lab in labels if number in _block_numbers(labels[lab])), None)
+            if source is not None:
+                cited.append(source)
+                unverified.remove(number)
+        cited = list(dict.fromkeys(cited))
     if unverified:
         return (
             "rejected",
@@ -300,6 +325,7 @@ def answer_question(
     generator: GenerationProvider,
     *,
     embedding_model: str | None = None,
+    scope: str = "cited",
 ) -> Answer:
     if not question.strip() or len(question) > MAX_QUESTION_CHARS:
         raise ValueError(f"La pregunta debe tener entre 1 y {MAX_QUESTION_CHARS} caracteres.")
@@ -344,16 +370,18 @@ def answer_question(
         }
         for label, hit in labels.items()
     }
-    status, text, cited, reason = verify(result, texts, question, pages)
+    status, text, cited, reason = verify(result, texts, question, pages, scope=scope)
     by_label = {citation.label: citation for citation in evidence}
     if status == "insufficient_evidence":
         text = "La evidencia recuperada no permite responder la pregunta con seguridad."
     elif status == "rejected":
         text = "No se muestra la respuesta del modelo porque no superó la verificación."
+    own = set(model_citations(result))
     return Answer(
         status,
         text,
         tuple(by_label[label] for label in cited),
         evidence,
         reason,
+        tuple(label for label in cited if label not in own),
     )

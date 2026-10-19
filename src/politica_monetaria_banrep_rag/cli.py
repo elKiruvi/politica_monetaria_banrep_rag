@@ -3,6 +3,7 @@
 import argparse
 import json
 import os
+import sqlite3
 import sys
 from contextlib import ExitStack
 from dataclasses import asdict, replace
@@ -11,6 +12,11 @@ from pathlib import Path
 from politica_monetaria_banrep_rag import diagnostics
 from politica_monetaria_banrep_rag.answering import Answer, answer_question, detect_reports
 from politica_monetaria_banrep_rag.catalog import Catalog, CatalogError
+from politica_monetaria_banrep_rag.comparison import (
+    Comparison,
+    compare,
+    detect_periods,
+)
 from politica_monetaria_banrep_rag.corpus import CorpusError, load_corpus
 from politica_monetaria_banrep_rag.crossref import CrossrefReportSource
 from politica_monetaria_banrep_rag.download import DownloadError, PdfDownloader
@@ -582,6 +588,11 @@ def _print_answer(answer: Answer) -> None:
     print(f"{labels[answer.status]}:\n{answer.text}")
     if answer.reason:
         print(f"Motivo: {answer.reason}")
+    if answer.added_citations:
+        print(
+            "Fuentes añadidas por la verificación (respaldan cifras que el modelo no citó): "
+            + ", ".join(answer.added_citations)
+        )
     shown = answer.citations or (answer.evidence if answer.status != "answered" else ())
     if shown:
         print("\nFuentes citadas:" if answer.citations else "\nEvidencia revisada:")
@@ -680,6 +691,205 @@ def _query(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     assert isinstance(warnings, list)
     for warning in warnings:
         print(f"Aviso: {warning}")
+    _print_answer(answer)
+
+
+_DIFFERENCE_KINDS = {
+    "revision_de_proyeccion": "revisión de proyección",
+    "proyeccion_vs_observado": "proyección frente al dato observado",
+    "observado_vs_proyeccion": "dato observado frente a proyección",
+    "observados": "entre cifras no marcadas como proyección",
+}
+
+
+def _number(value: object, *, signed: bool = False) -> str:
+    text = str(value).replace(".", ",")
+    return f"+{text}" if signed and not text.startswith("-") and text.strip("0,") else text
+
+
+def _print_comparison(comparison: Comparison, notes: dict[str, str]) -> None:
+    names = ", ".join(f"{r.reference_period} ({r.title})" for r in comparison.reports)
+    print(f"Comparación de «{comparison.indicator}» — informes: {names}")
+    print(
+        "Cifras tomadas solo de celdas atribuidas de cuadros; diferencias calculadas en Python, "
+        "no por el modelo de lenguaje."
+    )
+    if comparison.interpretation:
+        print(
+            f"Filas buscadas con: {' + '.join(comparison.interpretation)} "
+            "(precise con --indicador)."
+        )
+    for warning in comparison.warnings:
+        print(f"Aviso: {warning}")
+    current_table = None
+    for row in comparison.rows:
+        if row.table != current_table:
+            current_table = row.table
+            print(f"\n{row.table}")
+        unit = f" ({row.unit})" if row.unit else ""
+        print(f"  {row.indicator} — horizonte {row.horizon}{unit}")
+        for value in row.values:
+            if value is None:
+                continue
+            kind = "proyección o supuesto" if value.projection else "no marcada como proyección"
+            printed = f" (impresa {', '.join(value.page_labels)})" if value.page_labels else ""
+            print(
+                f"    {value.reference_period}: {value.value_text} ({kind}) — pág. "
+                f"{value.page_start} del PDF{printed}"
+            )
+        for difference in row.differences:
+            print(
+                f"    Diferencia {difference.from_report} → {difference.to_report}: "
+                f"{_number(difference.value, signed=True)} {row.difference_unit} "
+                f"({_DIFFERENCE_KINDS[difference.kind]})"
+            )
+        if not row.comparable:
+            print("    No comparable.")
+        for note in row.notes:
+            print(f"    Nota: {note}")
+    if comparison.truncated:
+        print("\nSe muestran las primeras filas; precise --horizonte o --cuadro.")
+    for table_id, text in notes.items():
+        print(f"\nNotas del cuadro ({table_id[:8]}): {text[:400]}{'…' if len(text) > 400 else ''}")
+    print("\nFuentes:")
+    for report in comparison.reports:
+        print(f"  {report.reference_period}: {report.title}. {report.source_url or '(sin URL)'}")
+    print(DISCLAIMER)
+
+
+def _compare(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    root = _data_dir(args)
+    try:
+        active = IndexManager(root).open_active()
+    except IndexStoreError as exc:
+        parser.exit(1, f"Error de comparación: {exc}\n")
+    try:
+        reports = active.lexical.reports
+        periods = {r.reference_period: r.report_id for r in reports.values()}
+        missing: tuple[str, ...] = ()
+        if args.informe:
+            ids = tuple(dict.fromkeys(periods.get(item, item) for item in args.informe))
+        else:
+            ids, missing = detect_periods(args.pregunta or "", periods)
+        indicator = args.indicador or args.pregunta or ""
+        absent = f" No están indexados: {', '.join(missing)}." if missing else ""
+        if len(ids) < 2:
+            parser.exit(
+                2,
+                "Error: indique al menos dos informes indexados (por ejemplo «--informe 2025-01 "
+                f"--informe 2025-07») o nómbrelos en la pregunta.{absent}\n",
+            )
+        if missing:
+            print(f"Aviso: informes mencionados que no están indexados: {', '.join(missing)}.")
+        comparison = compare(
+            active.lexical.all_chunks(),
+            reports,
+            ids,
+            indicator,
+            horizon=args.horizonte,
+            table=args.cuadro,
+            only_projections=not args.incluir_observados,
+            explicit_indicator=bool(args.indicador),
+        )
+        chunks = {c.chunk_id: c for c in active.lexical.all_chunks() if c.kind == "table"}
+        notes: dict[str, str] = {}
+        for row in comparison.rows:
+            for value in row.values:
+                if value is not None and value.table_id and value.table_id not in notes:
+                    table_notes = active.table_notes(chunks[value.chunk_id])
+                    if table_notes:
+                        notes[value.table_id] = " ".join(n.text for n in table_notes)
+        status = _index_status(root, active)
+    except ValueError as exc:
+        parser.exit(2, f"Error: {exc}\n")
+    except (CatalogError, IndexStoreError, sqlite3.Error) as exc:
+        parser.exit(1, f"Error de comparación: {exc}\n")
+    finally:
+        active.close()
+    if args.json:
+        payload = {
+            "index_id": active.index_id,
+            "missing_reports": list(missing),
+            **asdict(comparison),
+            "table_notes": notes,
+            "corpus": status,
+            "disclaimer": DISCLAIMER,
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2, default=str))
+        return
+    warnings = status["warnings"]
+    assert isinstance(warnings, list)
+    for warning in warnings:
+        print(f"Aviso: {warning}")
+    _print_comparison(comparison, notes)
+
+
+def _summarize(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    """Resumen trazable de un informe (o de un tema en él) con el flujo verificado de consultar."""
+    root = _data_dir(args)
+    try:
+        active = IndexManager(root).open_active()
+    except IndexStoreError as exc:
+        parser.exit(1, f"Error de resumen: {exc}\n")
+    model = args.modelo or os.getenv("BANREP_GENERATION_MODEL") or DEFAULT_GENERATION_MODEL
+    generator = None
+    try:
+        periods = {r.reference_period: r.report_id for r in active.lexical.reports.values()}
+        report_id = periods.get(args.informe, args.informe)
+        if report_id not in active.lexical.reports:
+            parser.exit(2, f"Error: el informe {args.informe} no está indexado.\n")
+        report = active.lexical.reports[report_id]
+        topic = (
+            args.tema or "mensajes principales sobre inflación, crecimiento y política monetaria"
+        )
+        question = (
+            f"Resume lo que dice el Informe de Política Monetaria de {report.reference_period} "
+            f"sobre: {topic}."
+        )
+        filters = SearchFilters(report_ids=(report_id,), section=None if args.tema else "Resumen")
+        hits, mode = _retrieve(active, topic, filters, args.top_k, args.modo)
+        embedding = active.embedding if mode != "lexico" else None
+        generator = OllamaGenerator(
+            model, base_url=os.getenv("BANREP_OLLAMA_URL") or DEFAULT_OLLAMA_URL
+        )
+        answer = answer_question(
+            question,
+            hits,
+            active.table_notes,
+            generator,
+            embedding_model=str(embedding["model"]) if embedding else None,
+            scope="all",
+        )
+        status = _index_status(root, active)
+    except ValueError as exc:
+        parser.exit(2, f"Error: {exc}\n")
+    except GenerationError as exc:
+        parser.exit(1, f"Error de generación: {exc}\n")
+    except (IndexStoreError, EmbeddingError) as exc:
+        parser.exit(
+            1, f"Error de resumen: {exc}\nLa vía léxica no necesita Ollama: «--modo lexico».\n"
+        )
+    except CatalogError as exc:
+        parser.exit(1, f"Error de resumen: {exc}\n")
+    finally:
+        active.close()
+        if generator is not None:
+            generator.close()
+    if args.json:
+        payload = {"index_id": active.index_id, "report_id": report_id, "topic": args.tema,
+                   "generation_model": model, **asdict(answer), "corpus": status,
+                   "disclaimer": DISCLAIMER}  # fmt: skip
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    warnings = status["warnings"]
+    assert isinstance(warnings, list)
+    for warning in warnings:
+        print(f"Aviso: {warning}")
+    print(f"Resumen de {report.title} ({report.reference_period}) — {topic}")
+    print(
+        "Cada cifra se verificó contra la evidencia de este informe; si el modelo no citó su "
+        "fuente, se agrega."
+    )
     _print_answer(answer)
 
 
@@ -891,6 +1101,36 @@ def main() -> None:
     )
     _add_filters(query_cmd)
     query_cmd.add_argument("--json", action="store_true", help="Emite la respuesta en JSON")
+    compare_cmd = subcommands.add_parser(
+        "comparar", help="Compara cifras de cuadros entre informes (cálculo determinista)"
+    )
+    compare_cmd.add_argument("pregunta", nargs="?", help="Pregunta con los informes a comparar")
+    compare_cmd.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
+    compare_cmd.add_argument(
+        "--informe", action="append", metavar="ipm-AAAA-MM|AAAA-MM",
+        help="Informe a comparar (repetible; al menos dos)",
+    )  # fmt: skip
+    compare_cmd.add_argument("--indicador", help="Fila del cuadro, p. ej. «IPC total»")
+    compare_cmd.add_argument("--horizonte", help="Columna exacta, p. ej. «2025» o «dic-25»")
+    compare_cmd.add_argument("--cuadro", help="Texto del título del cuadro, p. ej. «Anexo 2»")
+    compare_cmd.add_argument(
+        "--incluir-observados", action="store_true",
+        help="Incluye filas sin cifras marcadas como proyección (negrilla o «proy»)",
+    )  # fmt: skip
+    compare_cmd.add_argument("--json", action="store_true", help="Emite la comparación en JSON")
+    summary_cmd = subcommands.add_parser(
+        "resumir", help="Resume un informe o un tema con evidencia citada (Ollama local)"
+    )
+    summary_cmd.add_argument("informe", help="Informe: ipm-AAAA-MM o AAAA-MM")
+    summary_cmd.add_argument("--tema", help="Tema del resumen (por defecto, el resumen general)")
+    summary_cmd.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
+    summary_cmd.add_argument("--modo", choices=SEARCH_MODES, default="auto")
+    summary_cmd.add_argument(
+        "--top-k", type=int, default=8, choices=range(1, 13), metavar="K",
+        help="Fragmentos de evidencia (1 a 12; por defecto 8)",
+    )  # fmt: skip
+    summary_cmd.add_argument("--modelo", help="Modelo de generación de Ollama")
+    summary_cmd.add_argument("--json", action="store_true", help="Emite el resumen en JSON")
     validate_cmd = subcommands.add_parser(
         "validar-indice", help="Comprueba la integridad del índice activo y su vigencia"
     )
@@ -916,6 +1156,8 @@ def main() -> None:
         "validar-indice": _validate_index,
         "evaluar": _evaluate,
         "consultar": _query,
+        "comparar": _compare,
+        "resumir": _summarize,
     }.get(args.command)
     if handler is not None:
         handler(parser, args)
@@ -932,7 +1174,7 @@ def main() -> None:
     if args.command == "diagnostico":
         print(
             "Disponibles: sincronización, procesamiento, índice híbrido, búsqueda y consultas "
-            "con evidencia citada; las comparaciones entre informes aún no."
+            "con evidencia citada y comparaciones de cuadros entre informes."
         )
     elif args.command == "diagnostico-fuentes":
         access = diagnostics.run(download_one=args.descargar_uno)

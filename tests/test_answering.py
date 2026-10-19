@@ -473,3 +473,52 @@ def test_real_qwen_answers_with_citations_and_resists_injection():
         assert "E1" in [c.label for c in answer.citations]
     finally:
         generator.close()
+
+
+def test_grouped_citations_are_recognized():
+    labels = {"E1": "La inflación sería 4,7 %.", "E2": "La tasa fue 9,25 %."}
+    result = {"answer": "Inflación 4,7 % y tasa 9,25 % [E1, E2].", "citations": [],
+              "insufficient_evidence": False}  # fmt: skip
+    status, _, cited, _ = verify(result, labels, "resumen")
+    assert status == "answered" and cited == ["E1", "E2"]
+
+
+def test_summary_scope_adds_the_block_that_supports_each_figure():
+    labels = {"E1": "La inflación sería 4,7 %.", "E2": "La tasa fue 9,25 %."}
+    result = {"answer": "Inflación 4,7 % y tasa 9,25 % [E1].", "citations": ["E1"],
+              "insufficient_evidence": False}  # fmt: skip
+    assert verify(result, labels, "resumen")[0] == "rejected"
+    status, _, cited, _ = verify(result, labels, "resumen", scope="all")
+    assert status == "answered" and cited == ["E1", "E2"]  # E2 queda como fuente visible
+    invented = {**result, "answer": "Inflación 6,1 % [E1]."}
+    assert verify(invented, labels, "resumen", scope="all")[0] == "rejected"
+
+
+def test_answer_reports_citations_added_by_verification():
+    other = chunk("o", "2025-07", "La tasa de política se mantuvo en el 9,25 %.")
+    generator = FakeGenerator(
+        {"answer": "Inflación 4,7 % y tasa 9,25 % [E1].", "citations": ["E1"],
+         "insufficient_evidence": False}
+    )  # fmt: skip
+    answer = answer_question("resumen", [hit(INFLATION), hit(other, 2)], lambda c: [], generator,
+                             scope="all")  # fmt: skip
+    assert answer.status == "answered"
+    assert [c.label for c in answer.citations] == ["E1", "E2"]
+    assert answer.added_citations == ("E2",)
+
+
+def test_cli_resumir_restricts_to_the_report(catalog_root, monkeypatch, capsys):
+    from politica_monetaria_banrep_rag import cli
+
+    data = str(catalog_root)
+    run_cli(monkeypatch, capsys, "indexar", "--sin-embeddings", "--data-dir", data)
+    fake = FakeGenerator(
+        {"answer": "El petróleo cayó [E1].", "citations": ["E1"], "insufficient_evidence": False}
+    )
+    monkeypatch.setattr(cli, "OllamaGenerator", lambda model, base_url: fake)
+    code, out, _ = run_cli(monkeypatch, capsys, "resumir", "2025-01", "--tema", "petróleo",
+                           "--data-dir", data)  # fmt: skip
+    assert code == 0 and "Resumen de" in out and "si el modelo no citó su fuente" in out
+    assert "Resume lo que dice el Informe de Política Monetaria de 2025-01" in fake.calls[0][1]
+    code, _, err = run_cli(monkeypatch, capsys, "resumir", "2019-01", "--data-dir", data)
+    assert code == 2 and "no está indexado" in err
