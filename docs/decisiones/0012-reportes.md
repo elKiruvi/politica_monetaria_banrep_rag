@@ -17,7 +17,7 @@
 - **Respuestas no publicadas:** si la respuesta se rechazó o la evidencia no bastó, la lista se titula «Evidencia revisada (no respalda ninguna respuesta publicada)», nunca «Citas». En las comparaciones truncadas (más de 40 filas) se advierte que faltan filas.
 - **Lo que nunca incluye:** rutas locales, secretos ni el contenido completo de los PDF; solo las citas y la respuesta.
 - **Formatos:**
-  - **Markdown**: cada texto va en una sola línea y con el marcado escapado (`[`, `]`, `<`, `>`, `#`, `*`, `_`, `` ` ``, `|`, `!`, `\`). Así un texto del modelo o de los PDF no puede crear encabezados, enlaces ni HTML. Las marcas de cita «[E1]» se conservan porque, sin «(…)», no forman enlaces.
+  - **Markdown**: cada texto va en una sola línea, con el marcado escapado y sin listas iniciales. Un texto del modelo o de los PDF no puede crear encabezados, enlaces, definiciones de referencia ni HTML. Las marcas «[E1]» se conservan solo si no van seguidas de «(», «:» o «[».
   - **HTML imprimible:** autocontenido, con estilos propios y todo el texto escapado con `html.escape`.
   - **PDF**, con ReportLab 4.5 (BSD): fuentes estándar, tablas con anchos fijos y ajuste de palabras largas. Esas fuentes cubren cp1252, que incluye todo el español (tildes, ñ, ¿, «»). Unos pocos símbolos que quedan fuera se transliteran: «→» pasa a «->», «−» a «-» y «‹›» a «<>». Además, se normalizan por compatibilidad Unicode las letras matemáticas y los espacios y guiones especiales, y se eliminan los caracteres de ancho cero. Se descartó una fuente TTF embebida para no versionar binarios.
 - **CLI:** `--exportar ARCHIVO.{md,html,pdf}` en `consultar`, `comparar` y `resumir`.
