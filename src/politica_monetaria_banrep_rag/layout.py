@@ -163,12 +163,22 @@ def _char_text(char: LTChar, ligatures: _Ligatures, counts: Counter[str]) -> str
 
 
 def _box(
-    element: LTTextBoxHorizontal, page: int, ligatures: _Ligatures, counts: Counter[str]
+    element: LTTextBoxHorizontal,
+    page: int,
+    width: float,
+    height: float,
+    ligatures: _Ligatures,
+    counts: Counter[str],
 ) -> Block | None:
     lines: list[Line] = []
     chars: list[LTChar] = []
     for line in element:
         if not isinstance(line, LTTextLineHorizontal):
+            continue
+        x0, y0, x1, y1 = line.bbox
+        if x0 < 0 or y0 < 0 or x1 > width or y1 > height:
+            # Pdfminer can expose text positioned beyond the visible page (wide annexes).
+            # A citation to this page must not inherit cells from its invisible half.
             continue
         line_chars = [c for c in line if isinstance(c, LTChar)]
         chars += line_chars
@@ -186,7 +196,10 @@ def _box(
     if not text or not font:
         return None
     bold = any(mark in font for mark in _BOLD_MARKS)
-    x0, y0, x1, y1 = (round(value, 1) for value in element.bbox)
+    x0 = min(line.bbox[0] for line in lines)
+    y0 = min(line.bbox[1] for line in lines)
+    x1 = max(line.bbox[2] for line in lines)
+    y1 = max(line.bbox[3] for line in lines)
     return Block(page, "paragraph", text, (x0, y0, x1, y1), size, bold, lines=tuple(lines))
 
 
@@ -454,7 +467,7 @@ def extract_layout(path: Path, *, max_pages: int = 400) -> DocumentLayout:
             b
             for el in page
             if isinstance(el, LTTextBoxHorizontal)
-            if (b := _box(el, number, ligatures, counts))
+            if (b := _box(el, number, width, height, ligatures, counts))
         ]
         classified, label = _classify(raw, width, height)
         split = _split_columns(

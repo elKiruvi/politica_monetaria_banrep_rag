@@ -89,6 +89,21 @@ def test_layout_classifies_blocks_and_page_labels(report_pdf):
     assert heading.level == 2
 
 
+def test_layout_excludes_off_page_lines_before_classification(tmp_path):
+    path = tmp_path / "clipped.pdf"
+    path.write_bytes(make_layout_pdf([[
+        (60, 700, 10, "Visible narrative", "R"),
+        (700, 600, 10, "Invisible right 9,9", "R"),
+        (-120, 500, 10, "Invisible left 8,8", "R"),
+        (605, 400, 10, "Partly outside 7,7", "R"),
+        (60, 900, 10, "Invisible above 6,6", "R"),
+    ]]))  # fmt: skip
+    page = extract_layout(path).pages[0]
+    assert [block.text for block in page.blocks] == ["Visible narrative"]
+    assert all(0 <= line.bbox[0] < line.bbox[2] <= page.width
+               for block in page.blocks for line in block.lines)  # fmt: skip
+
+
 def annex_page():
     years = [2023, 2024, 2025, 2026]
     items = [(57, 780, 16, "Anexo 2 Principales variables del pronóstico", "B")]
