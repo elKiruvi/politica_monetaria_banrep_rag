@@ -16,7 +16,7 @@
   - **Respuestas:** las que llevan contenido documental incluyen el aviso de proyecto no oficial; los `Decimal` se serializan como texto, sin pérdida de precisión.
 - **Validación:** modelos Pydantic con `extra="forbid"`, longitudes máximas (pregunta ≤ 500, `top_k` ≤ 50 o 12), patrones de periodo e informe, y cuerpo ≤ 16 KB (413). El límite lo aplica un middleware ASGI que cuenta los bytes recibidos, también con `Transfer-Encoding: chunked`. Un JSON mal formado recibe «El cuerpo de la solicitud no es JSON válido». Los errores de validación se resumen en español («Solicitud inválida en: …»), sin trazas; un error inesperado responde 500 genérico.
 - **Seguridad por defecto:**
-  - `banrep-rag servir` escucha en 127.0.0.1 (o `localhost`, `::1`) y se niega a usar otra dirección sin `--permitir-red`, porque no hay autenticación. Con `--permitir-red` se aceptan todos los `Host`, lo que **desactiva la protección contra DNS rebinding**: úselo solo detrás de un proxy con autenticación.
+  - `banrep-rag servir` escucha en 127.0.0.1 (o `localhost`, `::1`) y se niega a usar otra dirección sin `--permitir-red`, porque no hay autenticación. Con `--permitir-red` la API sigue aceptando solo los `Host` locales, más los declarados en `BANREP_ALLOWED_HOSTS`; con `*` explícito se desactiva la protección contra DNS rebinding (ADR 0014). Úselo solo detrás de un proxy con autenticación.
   - `TrustedHostMiddleware` acepta solo hosts locales, lo que protege contra *DNS rebinding* desde un sitio web malicioso.
   - Sin CORS, de modo que otros orígenes no pueden leer respuestas.
   - Cabeceras: `Content-Security-Policy` restrictiva, `X-Frame-Options: DENY`, `nosniff`, `no-referrer` y `no-store`, en todas las respuestas, también en las de error 413 y 500.

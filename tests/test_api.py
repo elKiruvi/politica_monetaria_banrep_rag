@@ -288,3 +288,29 @@ def test_compare_warnings_reach_the_api(tmp_path):
     body = TestClient(app).post("/api/v1/compare", json={"reports": ["2025-01", "2025-07"]}).json()
     assert body["warnings"][0] == "aviso del servicio"
     assert any("Ninguna fila coincide" in w for w in body["warnings"])
+
+
+def test_network_mode_keeps_host_checks_unless_wildcard_is_declared(monkeypatch, capsys, tmp_path):
+    started = {}
+    monkeypatch.setattr("uvicorn.run", lambda app, **kwargs: started.update(app=app, **kwargs))
+    run_cli(monkeypatch, capsys, "servir", "--host", "0.0.0.0", "--permitir-red", "--data-dir",
+            str(tmp_path))  # fmt: skip
+    client = TestClient(started["app"], raise_server_exceptions=False)
+    assert client.get("/api/v1/health", headers={"Host": "127.0.0.1:8000"}).status_code == 200
+    assert client.get("/api/v1/health", headers={"Host": "evil.example"}).status_code == 400
+    monkeypatch.setenv("BANREP_ALLOWED_HOSTS", "banrep.lan")
+    run_cli(monkeypatch, capsys, "servir", "--host", "0.0.0.0", "--permitir-red", "--data-dir",
+            str(tmp_path))  # fmt: skip
+    client = TestClient(started["app"], raise_server_exceptions=False)
+    assert client.get("/api/v1/health", headers={"Host": "banrep.lan"}).status_code == 200
+    assert client.get("/api/v1/health", headers={"Host": "evil.example"}).status_code == 400
+
+
+def test_declared_local_ollama_hosts(monkeypatch):
+    from politica_monetaria_banrep_rag.embeddings import is_local_url
+
+    assert not is_local_url("http://host.docker.internal:11434")
+    monkeypatch.setenv("BANREP_OLLAMA_LOCAL_HOSTS", "host.docker.internal, ollama")
+    assert is_local_url("http://host.docker.internal:11434")
+    assert is_local_url("http://ollama:11434")
+    assert not is_local_url("http://ollama.example.com:11434")
