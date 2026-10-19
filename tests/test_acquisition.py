@@ -124,8 +124,14 @@ def test_expired_download_is_kept_without_asking_the_source(tmp_path, pdf_bytes)
         first = catalog.sync(1)
         clock.now += 40 * 86400
         assert catalog.plan(1, allow_downloads=False)["window"][0]["status"] == "pdf_anterior"
-        assert catalog.sync(1, allow_downloads=False) == first
-    assert len(calls) == 1
+        attempts = catalog.revalidations()
+        second = catalog.sync(1, allow_downloads=False)
+    assert second != first and len(calls) == 1
+    record = catalog.current()[1]["reports"][0]
+    # El snapshot no presenta como vigente un PDF cuya verificación venció.
+    assert record["acquisition"]["verification_status"] == "revalidation_pending"
+    assert catalog.verification([record])[0]["status"] == "revalidation_pending"
+    assert catalog.revalidations() == attempts  # no se registra un intento que no ocurrió
 
 
 class NetSource(Source):
@@ -189,3 +195,114 @@ def test_cli_single_file_errors_still_fail(monkeypatch, capsys, tmp_path):
     code, _, err = run_cli(monkeypatch, capsys, "importar", str(bad), "--sin-red",
                            "--data-dir", str(tmp_path / "datos"))  # fmt: skip
     assert code == 1 and "no es un PDF" in err
+
+
+def test_imports_are_used_only_when_authorized_even_after_a_block(tmp_path, pdf_bytes):
+    calls, clock = [], Clock()
+    source = Source([report(7), report(4)])
+    catalog, client = make_catalog(
+        tmp_path, source, counting(pdf_bytes, calls, 302), wall_clock=clock
+    )
+    with client:
+        for month in (7, 4):
+            catalog.import_pdf(ipm(tmp_path, month))
+        with pytest.raises(DownloadBlockedError) as error:
+            catalog.sync(2)
+        assert catalog.current() is None and len(calls) == 1
+        assert str(error.value).count("ya importado: use --usar-importados") == 2
+        clock.now += 3600  # dentro de la espera
+        statuses = [row["status"] for row in catalog.plan(2)["window"]]
+        assert statuses == ["importado_sin_autorizar"] * 2
+        with pytest.raises(CatalogError, match="ya importado"):
+            catalog.sync(2)
+        catalog.sync(2, use_imports=True)
+        assert catalog.last_blocked is None  # la espera evitó pedir PDF: no hubo reto nuevo
+    assert len(calls) == 1
+
+
+def test_block_without_missing_reports_is_reported_by_the_cli(
+    monkeypatch, capsys, tmp_path, pdf_bytes
+):
+    from politica_monetaria_banrep_rag import cli
+
+    source = NetSource([report(7)])
+    respond = counting(pdf_bytes, [], 302)
+    monkeypatch.setattr(cli, "_make_source", lambda name: source)
+    real = cli.PdfDownloader
+    mocked = httpx.Client(transport=httpx.MockTransport(respond))
+    monkeypatch.setattr(cli, "PdfDownloader", lambda: real(mocked, attempts=1))
+    data = tmp_path / "datos"
+    catalog = cli.Catalog(data, source, real())
+    catalog.import_pdf(ipm(tmp_path, 7))
+    code, _, err = run_cli(monkeypatch, capsys, "sincronizar", "--usar-importados", "--max-reports",
+                           "1", "--pausa", "0", "--data-dir", str(data))  # fmt: skip
+    assert code == 0 and "Aviso: Banrep pidió una verificación antibot" in err
+    code, out, _ = run_cli(monkeypatch, capsys, "faltantes", "--max-reports", "1", "--json",
+                           "--data-dir", str(data))  # fmt: skip
+    assert json.loads(out)["blocked_until"]
+    code, out, _ = run_cli(monkeypatch, capsys, "faltantes", "--max-reports", "1",
+                           "--data-dir", str(data))  # fmt: skip
+    assert "--reintentar-ahora" in out
+
+
+def test_future_block_timestamp_does_not_extend_the_wait(tmp_path, pdf_bytes):
+    clock = Clock()
+    catalog, client = make_catalog(
+        tmp_path, Source([report(7)]), counting(pdf_bytes, [], 302), wall_clock=clock
+    )
+    with client, pytest.raises(DownloadBlockedError):
+        catalog.sync(1)
+    clock.now -= 30 * 86400  # el reloj del equipo retrocede
+    assert catalog.blocked_until() == clock.now + 12 * 3600
+
+
+def test_folder_import_skips_links_special_and_unreadable_files(monkeypatch, capsys, tmp_path):
+    import os
+
+    folder = tmp_path / "Descargas"
+    folder.mkdir()
+    real = ipm(tmp_path, 7, name="fuera.pdf")
+    (folder / "enlace.pdf").symlink_to(real)
+    os.mkfifo(folder / "tubo.pdf")
+    locked = ipm(folder, 4, name="cerrado.pdf")
+    locked.chmod(0)
+    ipm(folder, 7)
+    data = str(tmp_path / "datos")
+    try:
+        code, out, err = run_cli(monkeypatch, capsys, "importar", str(folder), "--sin-red",
+                                 "--data-dir", data)  # fmt: skip
+    finally:
+        locked.chmod(0o600)
+    assert code == 0 and "Importado ipm-2026-07 desde «ipm-7.pdf»" in out
+    assert "enlace.pdf" not in out  # el listado ya omite enlaces
+    if os.geteuid() != 0:
+        assert "Omitido «cerrado.pdf»: fallo del sistema local (PermissionError)" in err
+    assert str(tmp_path) not in err  # sin rutas personales
+
+
+def test_scanned_file_replaced_by_a_link_is_rejected(tmp_path, pdf_bytes):
+    from politica_monetaria_banrep_rag.catalog import ImportRejectedError
+
+    catalog, client = make_catalog(tmp_path, Source([]), counting(pdf_bytes, []))
+    link = tmp_path / "x.pdf"
+    link.symlink_to(ipm(tmp_path, 7))
+    with client:
+        with pytest.raises(ImportRejectedError, match="enlace simbólico"):
+            catalog.import_pdf(link, follow_symlinks=False)
+        assert catalog.import_pdf(link)["report"]["report_id"] == "ipm-2026-07"  # explícito
+
+
+def test_update_passes_download_options_to_sync(monkeypatch, capsys, tmp_path):
+    from politica_monetaria_banrep_rag import cli
+
+    seen = []
+    monkeypatch.setattr(
+        cli,
+        "_run_sync",
+        lambda parser, args: seen.append((args.sin_descargar, args.reintentar_ahora)),
+    )
+    monkeypatch.setattr(cli, "_process", lambda parser, args: None)
+    monkeypatch.setattr(cli, "_index", lambda parser, args: None)
+    code, _, _ = run_cli(monkeypatch, capsys, "actualizar", "--sin-descargar", "--reintentar-ahora",
+                         "--sin-embeddings", "--data-dir", str(tmp_path))  # fmt: skip
+    assert code == 0 and seen == [(True, True)]

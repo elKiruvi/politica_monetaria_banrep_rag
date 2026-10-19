@@ -77,6 +77,7 @@ _PLAN_LABELS = {
     "importado": "se usará el PDF importado (sin descargar)",
     "pdf_anterior": "verificación vencida; se conserva el PDF verificado antes (sin descargar)",
     "falta": "falta: no hay PDF verificado ni importado",
+    "importado_sin_autorizar": "sin descarga; hay un PDF importado: use --usar-importados",
 }
 
 
@@ -161,13 +162,19 @@ def _import(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                         expected_period=args.periodo,
                         lookup=lookup.find if lookup is not None else None,
                         replace=args.reemplazar,
+                        follow_symlinks=not scanned,
                     )
-                except (ImportFileError, ImportRejectedError) as exc:
+                except (ImportFileError, ImportRejectedError, OSError) as exc:
                     if not scanned:
                         raise
+                    reason = (
+                        f"fallo del sistema local ({type(exc).__name__})."
+                        if isinstance(exc, OSError)
+                        else exc
+                    )
                     # En una carpeta (p. ej. Descargas) es normal encontrar otros PDF.
                     skipped += 1
-                    print(f"Omitido «{path.name}»: {exc}", file=sys.stderr)
+                    print(f"Omitido «{path.name}»: {reason}", file=sys.stderr)
                     continue
                 imported += 1
                 origin = (
@@ -925,13 +932,19 @@ def _run_sync(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
             )
             options = {
                 "use_imports": args.usar_importados,
-                "allow_downloads": not getattr(args, "sin_descargar", False),
-                "ignore_cooldown": getattr(args, "reintentar_ahora", False),
+                "allow_downloads": not args.sin_descargar,
+                "ignore_cooldown": args.reintentar_ahora,
             }
             if args.dry_run:
                 _print_plan(catalog.plan(max_reports, **options))
                 return
             snapshot_id = catalog.sync(max_reports, **options)
+            if catalog.last_blocked is not None:
+                print(
+                    "Aviso: Banrep pidió una verificación antibot; la ventana se activó con PDF "
+                    "verificados antes o importados, sin revalidarlos en la fuente.",
+                    file=sys.stderr,
+                )
     except OSError as exc:
         parser.exit(1, f"Error de sincronización: {_local_failure(exc)}\n")
     except (SourceError, DownloadError, CatalogError, ValueError) as exc:
@@ -958,6 +971,7 @@ def _missing(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             catalog = Catalog(root, source, PdfDownloader())
             stack.callback(catalog.downloader.client.close)
             plan = catalog.plan(max_reports, allow_downloads=False)
+            until = catalog.blocked_until() if root.exists() else None
     except OSError as exc:
         parser.exit(1, f"Error: {_local_failure(exc)}\n")
     except (SourceError, CatalogError, ValueError) as exc:
@@ -965,8 +979,12 @@ def _missing(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     rows = plan["window"]
     assert isinstance(rows, list)
     absent = [row for row in rows if row["status"] == "falta"]
+    blocked_until = (
+        datetime.fromtimestamp(until, UTC).isoformat(timespec="seconds") if until else None
+    )
     if args.json:
-        print(json.dumps({"window": rows, "missing": len(absent)}, ensure_ascii=False, indent=2))
+        payload = {"window": rows, "missing": len(absent), "blocked_until": blocked_until}
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
         return
     for row in rows:
         print(f"  {row['report_id'][4:]}  {_MISSING_LABELS[row['status']]:<34} {row['title']}")
@@ -980,6 +998,11 @@ def _missing(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         )
     else:
         print(f"\nLa ventana de {len(rows)} informes está completa en el equipo.")
+    if blocked_until:
+        print(
+            f"Banrep bloqueó una descarga reciente: «sincronizar» no pedirá PDF hasta "
+            f"{blocked_until} (--reintentar-ahora para un intento manual)."
+        )
 
 
 DEFAULT_REFERENCE = Path("fuentes/informes_conocidos.json")
@@ -1439,7 +1462,10 @@ def main() -> None:
         "--sin-descargar", action="store_true",
         help="No solicita PDF: usa descargas verificadas e importados",
     )  # fmt: skip
-    update_cmd.add_argument("--reintentar-ahora", action="store_true")
+    update_cmd.add_argument(
+        "--reintentar-ahora", action="store_true",
+        help="Intenta descargar aunque Banrep haya bloqueado una descarga en las últimas 12 h",
+    )  # fmt: skip
     update_cmd.add_argument("--revalidar-dias", type=_non_negative, default=30.0)
     update_cmd.add_argument("--pausa", type=_pause, default=10.0)
     update_cmd.add_argument("--procesos", type=int, default=1, choices=range(1, 9), metavar="N")

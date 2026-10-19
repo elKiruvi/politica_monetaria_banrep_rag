@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import re
+import stat
 import sys
 import tempfile
 import time
@@ -48,13 +49,21 @@ def _iso(timestamp: float) -> str:
     return datetime.fromtimestamp(timestamp, UTC).isoformat(timespec="seconds")
 
 
-def missing_message(missing: list[ReportRecord]) -> str:
-    """Explica qué informes faltan y cómo obtenerlos sin eludir los controles de la fuente."""
+def missing_message(
+    missing: list[ReportRecord], importable: set[str] | frozenset[str] = frozenset()
+) -> str:
+    """Explica qué informes faltan y cómo obtenerlos sin eludir los controles de la fuente.
+
+    ``importable`` son los que ya tienen un PDF importado que no se usó porque la persona no
+    lo autorizó (``--usar-importados``): pedir que se importen otra vez sería engañoso.
+    """
     lines = [
         f"Faltan {len(missing)} informe(s) de la ventana; ábralos en su navegador desde el enlace "
         "oficial, guarde el PDF e impórtelo con «banrep-rag importar CARPETA_O_ARCHIVO»:"
     ]
-    lines += [f"  {r.reference_period} — {r.title} — {r.source_url}" for r in missing]
+    for r in missing:
+        hint = " (ya importado: use --usar-importados)" if r.report_id in importable else ""
+        lines.append(f"  {r.reference_period} — {r.title} — {r.source_url}{hint}")
     return "\n".join(lines)
 
 
@@ -196,6 +205,38 @@ def _lock_exclusive(handle: BinaryIO) -> None:
         fcntl.flock(handle.fileno(), fcntl.LOCK_EX)
 
 
+def _open_import(path: Path, *, follow_symlinks: bool) -> BinaryIO:
+    """Abre el archivo una sola vez y valida tipo y tamaño sobre ese descriptor.
+
+    ``O_NONBLOCK`` evita quedar bloqueado en un FIFO; sin ``follow_symlinks`` se rechaza un
+    enlace simbólico aunque haya aparecido después de listar la carpeta.
+    """
+    flags = os.O_RDONLY | getattr(os, "O_NONBLOCK", 0)
+    if not follow_symlinks:
+        flags |= getattr(os, "O_NOFOLLOW", 0)
+    try:
+        fd = os.open(path, flags)
+    except FileNotFoundError as exc:
+        raise CatalogError(f"El archivo «{path.name}» no existe.") from exc
+    except OSError as exc:
+        if not follow_symlinks and path.is_symlink():
+            raise ImportRejectedError(f"«{path.name}» es un enlace simbólico.") from exc
+        raise
+    source = os.fdopen(fd, "rb")
+    try:
+        info = os.fstat(source.fileno())
+        if not stat.S_ISREG(info.st_mode):
+            raise ImportRejectedError(f"«{path.name}» no es un archivo regular.")
+        if info.st_size > _MAX_IMPORT_BYTES:
+            raise ImportRejectedError(f"«{path.name}» excede 30 MB.")
+        if hasattr(os, "set_blocking"):
+            os.set_blocking(source.fileno(), True)
+    except BaseException:
+        source.close()
+        raise
+    return source
+
+
 class Catalog:
     """Serializa sincronizaciones; nunca publica una ventana incompleta."""
 
@@ -223,6 +264,7 @@ class Catalog:
         if not 0 <= block_cooldown_seconds < float("inf"):
             raise ValueError("La espera tras un bloqueo debe ser un número finito no negativo.")
         self.block_cooldown_seconds = block_cooldown_seconds
+        self.last_blocked: DownloadBlockedError | None = None  # bloqueo de la última sync
         self.root = root
         self.source = source
         self.downloader = downloader
@@ -275,8 +317,10 @@ class Catalog:
         ]
         if not blocked:
             return None
-        until = max(blocked) + self.block_cooldown_seconds
-        return until if self.wall_clock() < until else None
+        now = self.wall_clock()
+        # Un intento con fecha futura (reloj atrasado después) no alarga la espera.
+        until = min(max(blocked), now) + self.block_cooldown_seconds
+        return until if now < until else None
 
     def sync(
         self,
@@ -294,6 +338,7 @@ class Catalog:
         Si falta algún informe, el error enumera todos los que faltan con su enlace oficial.
         """
         use_imports = use_imports or not allow_downloads
+        self.last_blocked = None
         if (
             not isinstance(max_reports, int)
             or isinstance(max_reports, bool)
@@ -338,19 +383,21 @@ class Catalog:
                 previous = self._reusable(entries, report.download_url, fingerprint, raw_dir)
                 fresh = previous is not None and self._is_fresh(previous)
                 label = f"{position}/{len(reports)}: {report.report_id}"
+                expired = False  # PDF anterior conservado sin intento de revalidación
                 if fresh:
                     assert previous is not None
                     self.progress(f"Sin cambios {label} (verificado el {previous['verified_at']}).")
                     pdf = previous
                 elif not downloads_on:
                     # Sin solicitar nada a la fuente: PDF verificado antes, importado o faltante.
-                    imported = _latest_import(entries)
+                    imported = _latest_import(entries) if use_imports else None
                     if previous is not None:
                         self.progress(
                             f"Sin descarga {label}: se conserva el PDF verificado el "
                             f"{previous['verified_at']} (verificación vencida)."
                         )
                         pdf = previous
+                        expired = True
                     elif imported is not None:
                         self.progress(f"Sin descarga {label}: se usa el PDF importado.")
                         records.append(
@@ -434,7 +481,11 @@ class Catalog:
                         "acquisition": {
                             "method": "download",
                             "verification_status": (
-                                revalidations.get(report.report_id, {}).get("status", "verified")
+                                "revalidation_pending"
+                                if expired
+                                else revalidations.get(report.report_id, {}).get(
+                                    "status", "verified"
+                                )
                                 if revalidations.get(report.report_id, {}).get("sha256")
                                 in {None, pdf["sha256"]}
                                 else "verified"
@@ -442,9 +493,13 @@ class Catalog:
                         },
                     }
                 )
+            self.last_blocked = blocked
             if missing:
                 self._save_registry(registry)  # Lo verificado en esta ejecución se conserva.
-                message = missing_message(missing)
+                importable = {
+                    r.report_id for r in missing if _latest_import(registry.get(r.report_id, []))
+                }
+                message = missing_message(missing, importable)
                 if blocked is not None:
                     raise DownloadBlockedError(f"{blocked} {message}") from blocked
                 raise CatalogError(message)
@@ -486,6 +541,7 @@ class Catalog:
         expected_period: str | None = None,
         lookup: Callable[[str], ReportRecord | None] | None = None,
         replace: bool = False,
+        follow_symlinks: bool = True,
     ) -> dict[str, object]:
         """Copia el PDF a ``raw/``, lo identifica sobre la copia y lo registra como importado.
 
@@ -494,12 +550,17 @@ class Catalog:
         Crossref; sin él, los metadatos quedan como no verificados y solo se admiten los meses
         habituales del informe. Un PDF distinto para un periodo ya importado exige ``replace``.
         """
-        if not source_path.exists():
-            raise CatalogError(f"El archivo «{source_path.name}» no existe.")
-        if not source_path.is_file():
-            raise CatalogError(f"«{source_path.name}» no es un archivo regular.")
-        if source_path.stat().st_size > _MAX_IMPORT_BYTES:
-            raise ImportRejectedError(f"«{source_path.name}» excede 30 MB.")
+        with _open_import(source_path, follow_symlinks=follow_symlinks) as source:
+            return self._import_open(source, source_path, expected_period, lookup, replace)
+
+    def _import_open(
+        self,
+        source: BinaryIO,
+        source_path: Path,
+        expected_period: str | None,
+        lookup: Callable[[str], ReportRecord | None] | None,
+        replace: bool,
+    ) -> dict[str, object]:
         self.root.mkdir(parents=True, exist_ok=True, mode=0o700)
         raw_dir = self.root / "raw"
         raw_dir.mkdir(parents=True, exist_ok=True, mode=0o700)
@@ -515,7 +576,7 @@ class Catalog:
             try:
                 digest = hashlib.sha256()
                 copied = 0
-                with source_path.open("rb") as source, os.fdopen(fd, "wb") as handle:
+                with os.fdopen(fd, "wb") as handle:
                     while block := source.read(65_536):
                         copied += len(block)
                         if copied > _MAX_IMPORT_BYTES:
@@ -652,7 +713,7 @@ class Catalog:
         active = self.current() if exists else None
         until = self.blocked_until() if exists and allow_downloads and not ignore_cooldown else None
         downloads_on = allow_downloads and until is None
-        use_imports = use_imports or not downloads_on
+        use_imports = use_imports or not allow_downloads
         raw_dir = self.root / "raw"
         rows = []
         for report in reports:
@@ -668,7 +729,7 @@ class Catalog:
             elif use_imports and _latest_import(entries) is not None:
                 status = "importado_si_falla" if downloads_on else "importado"
             elif not downloads_on:
-                status = "falta"
+                status = "importado_sin_autorizar" if _latest_import(entries) else "falta"
             else:
                 downloads = [e for e in entries if not _is_import(e)]
                 status = "metadatos_o_archivo_cambiados" if downloads else "nuevo"

@@ -22,8 +22,16 @@ Antes de este cambio, `sincronizar` seguía pidiendo PDF tras un reto: con `--us
 1. **Freno en la ejecución:** el primer `DownloadBlockedError` detiene todas las descargas de esa sincronización. Los informes restantes se componen con la descarga verificada anterior (aunque esté vencida), el PDF importado (con `--usar-importados`) o quedan como faltantes.
 2. **Espera persistente de 12 h:** el último bloqueo queda en `revalidations.json` (ya existía, `error_type = blocked`). Mientras no hayan pasado 12 h, `sincronizar` no solicita PDF. `--reintentar-ahora` permite un intento manual deliberado; no hay reintentos automáticos.
 3. **Ventana sin descargas:** `sincronizar --sin-descargar` (también en `actualizar`) consulta solo Crossref y activa la ventana `latest_n` con descargas verificadas y PDF importados. Cada registro conserva su método de adquisición (`download` o `local_import`). No registra intentos que no ocurrieron.
-4. **Faltantes explícitos:** si falta algún informe, el error enumera **todos** los que faltan con su enlace oficial (DOI), en lugar de fallar en el primero. `banrep-rag faltantes` muestra el mismo estado sin intentar descargas.
-5. **Importación de carpetas:** `importar CARPETA` revisa los PDF de primer nivel (sin subcarpetas ni enlaces simbólicos). Omite con aviso los que no son el informe principal, no son PDF válidos o chocan con otro PDF importado del mismo periodo. Un archivo indicado de forma explícita sigue fallando si no se puede importar.
+4. **Los importados solo se usan si la persona lo pide:** con `--usar-importados` o `--sin-descargar`, también durante la espera. Si falta un informe que ya está importado, el error lo señala («ya importado: use --usar-importados») en lugar de pedir que se importe otra vez. Un PDF descargado antes y conservado sin revalidar queda en el snapshot como `revalidation_pending`, nunca como `verified`. Si hubo un reto pero la ventana se completó con PDF anteriores o importados, `sincronizar` termina con un aviso explícito.
+5. **Faltantes explícitos:** si falta algún informe, el error enumera **todos** los que faltan con su enlace oficial (DOI), en lugar de fallar en el primero. `banrep-rag faltantes` muestra el mismo estado sin intentar descargas.
+6. **Importación de carpetas:** `importar CARPETA` revisa los PDF de primer nivel, sin subcarpetas.
+   - Cada archivo se abre una sola vez con `O_NOFOLLOW | O_NONBLOCK`, y el tipo y el tamaño se validan sobre ese descriptor. Así se rechazan los enlaces simbólicos y los FIFO aunque aparezcan después de listar la carpeta.
+   - Omite con aviso, sin mostrar rutas personales, los archivos que:
+     - no son el informe principal;
+     - no son PDF válidos;
+     - no se pueden leer;
+     - chocan con otro PDF importado del mismo periodo.
+   - `faltantes` muestra hasta cuándo dura la espera tras un bloqueo. Un archivo indicado de forma explícita sigue fallando si no se puede importar.
 
 El flujo recomendado cuando la fuente bloquea al equipo es:
 
