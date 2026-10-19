@@ -6,6 +6,7 @@ no encontrado o servicio no disponible) para que cada interfaz elija su código 
 """
 
 import os
+import sqlite3
 from collections.abc import Callable, Iterator
 from contextlib import contextmanager
 from dataclasses import dataclass, field, replace
@@ -50,11 +51,14 @@ DISCLAIMER = (
 
 
 class ServiceError(Exception):
-    """Error presentable al usuario; ``kind`` es invalid, not_found o unavailable."""
+    """Error presentable al usuario; ``kind`` es invalid, not_found o unavailable.
 
-    def __init__(self, kind: str, message: str) -> None:
+    ``warnings`` conserva los avisos reunidos antes del fallo (por ejemplo, el de privacidad)."""
+
+    def __init__(self, kind: str, message: str, warnings: list[str] | None = None) -> None:
         super().__init__(message)
         self.kind = kind
+        self.warnings = list(warnings or [])
 
 
 @dataclass(frozen=True)
@@ -143,12 +147,45 @@ class RagService:
             return []
         return [f"Ollama no es local ({url}); las consultas y la evidencia saldrán del equipo."]
 
+    def _note_privacy(self, warnings: list[str]) -> None:
+        """Solo cuando se va a contactar a Ollama, y una vez por operación."""
+        for warning in self.privacy_warnings():
+            if warning not in warnings:
+                warnings.append(warning)
+
+    def _redact(self, message: str) -> str:
+        """Los mensajes al usuario no exponen rutas locales del equipo."""
+        for path, label in (
+            (str(self.root.resolve()), "<datos>"),
+            (str(self.root), "<datos>"),
+            (str(Path.home()), "~"),
+        ):
+            if path not in {"", "."}:
+                message = message.replace(path, label)
+        return message
+
+    @contextmanager
+    def _guard(self, warnings: list[str]) -> Iterator[None]:
+        """Traduce errores a ``ServiceError`` sin rutas y con los avisos reunidos."""
+        try:
+            yield
+        except ServiceError as exc:
+            raise ServiceError(
+                exc.kind, self._redact(str(exc)), [*warnings, *exc.warnings]
+            ) from exc
+        except (IndexStoreError, sqlite3.Error, OSError) as exc:
+            raise ServiceError(
+                "unavailable",
+                self._redact(f"No se pudo leer el índice activo ({exc})."),
+                warnings,
+            ) from exc
+
     @contextmanager
     def open_index(self) -> Iterator[ActiveIndex]:
         try:
             active = IndexManager(self.root).open_active()
         except IndexStoreError as exc:
-            raise ServiceError("unavailable", str(exc)) from exc
+            raise ServiceError("unavailable", self._redact(str(exc))) from exc
         try:
             yield active
         finally:
@@ -193,7 +230,7 @@ class RagService:
             "ollama": ollama,
             "generation_model": generation,
             "generation_model_installed": generation in models or f"{generation}:latest" in models,
-            "warnings": self.privacy_warnings(),
+            "warnings": self.privacy_warnings(),  # avisa aunque aún no se haya consultado
             "disclaimer": DISCLAIMER,
         }
 
@@ -251,6 +288,8 @@ class RagService:
         embedder = None
         try:
             try:
+                if mode != "lexico":
+                    self._note_privacy(warnings)
                 embedder = self._embedder(active, mode)
                 hits = active.search(query, filters, top_k=top_k, mode=mode, embedder=embedder)
                 return hits, mode
@@ -272,8 +311,8 @@ class RagService:
     def search(
         self, query: str, filters: SearchFilters, *, top_k: int = 5, mode: str = "auto"
     ) -> SearchResult:
-        warnings = self.privacy_warnings()
-        with self.open_index() as active:
+        warnings: list[str] = []
+        with self._guard(warnings), self.open_index() as active:
             hits, used = self.retrieve(active, query, filters, top_k, mode, warnings)
             notes = {
                 hit.chunk.chunk_id: [note.text for note in active.table_notes(hit.chunk)]
@@ -323,9 +362,9 @@ class RagService:
         mode: str = "auto",
         model: str | None = None,
     ) -> QueryResult:
-        warnings = self.privacy_warnings()
+        warnings: list[str] = []
         model = model or self.generation_model
-        with self.open_index() as active:
+        with self._guard(warnings), self.open_index() as active:
             detected: tuple[str, ...] = ()
             if not (filters.report_ids or filters.period_from or filters.period_to):
                 periods = {r.reference_period: r.report_id for r in active.lexical.reports.values()}
@@ -337,6 +376,7 @@ class RagService:
                 if detected:
                     filters = replace(filters, report_ids=detected)
             hits, used = self.retrieve(active, question, filters, top_k, mode, warnings)
+            self._note_privacy(warnings)  # la pregunta y la evidencia van al generador
             answer = self._generate(active, question, hits, used, model, "cited")
             return QueryResult(
                 active.index_id, used, model, detected, answer, self.corpus(active), warnings
@@ -353,7 +393,7 @@ class RagService:
         include_observed: bool = False,
     ) -> CompareResult:
         warnings: list[str] = []
-        with self.open_index() as active:
+        with self._guard(warnings), self.open_index() as active:
             indexed = active.lexical.reports
             periods = {r.reference_period: r.report_id for r in indexed.values()}
             missing: tuple[str, ...] = ()
@@ -407,9 +447,9 @@ class RagService:
         mode: str = "auto",
         model: str | None = None,
     ) -> SummaryResult:
-        warnings = self.privacy_warnings()
+        warnings: list[str] = []
         model = model or self.generation_model
-        with self.open_index() as active:
+        with self._guard(warnings), self.open_index() as active:
             periods = {r.reference_period: r.report_id for r in active.lexical.reports.values()}
             report_id = periods.get(report, report)
             if report_id not in active.lexical.reports:
@@ -424,6 +464,7 @@ class RagService:
             )
             filters = SearchFilters(report_ids=(report_id,), section=None if topic else "Resumen")
             hits, used = self.retrieve(active, subject, filters, top_k, mode, warnings)
+            self._note_privacy(warnings)
             answer = self._generate(active, question, hits, used, model, "all")
             return SummaryResult(
                 active.index_id, meta, subject, model, answer, self.corpus(active), warnings

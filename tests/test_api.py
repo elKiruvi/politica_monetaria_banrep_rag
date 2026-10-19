@@ -10,7 +10,7 @@ from test_answering import FakeGenerator
 from test_index_store import run_cli
 from test_semantic_index import FakeEmbedder
 
-from politica_monetaria_banrep_rag.api import create_app
+from politica_monetaria_banrep_rag.api import LOCAL_HOSTS, create_app
 from politica_monetaria_banrep_rag.service import RagService
 
 catalog_root = test_index_store.catalog_root  # fixture compartida
@@ -35,6 +35,7 @@ def client_for(root, generator=None, **kwargs):
             "models": ["qwen3:4b-instruct"],
         },  # fmt: skip
     )
+    kwargs.setdefault("allowed_hosts", [*LOCAL_HOSTS, "testserver"])
     return TestClient(create_app(service, **kwargs), raise_server_exceptions=False)
 
 
@@ -184,3 +185,87 @@ def test_servir_refuses_network_exposure_without_flag(monkeypatch, capsys, tmp_p
     code, _, err = run_cli(monkeypatch, capsys, "servir", "--host", "0.0.0.0", "--data-dir",
                            str(tmp_path))  # fmt: skip
     assert code == 2 and "--permitir-red" in err
+
+
+def test_chunked_body_without_content_length_is_limited(indexed):
+    def chunks():
+        yield b'{"query": "'
+        for _ in range(100):
+            yield b"x" * 1024
+        yield b'"}'
+
+    response = client_for(indexed).post(
+        "/api/v1/search", content=chunks(), headers={"Content-Type": "application/json"}
+    )
+    assert response.status_code == 413 and "demasiado grande" in response.json()["detail"]
+    assert response.headers["X-Frame-Options"] == "DENY"
+
+
+def test_errors_do_not_expose_local_paths(indexed):
+    index_dir = next(p for p in (indexed / "indexes").iterdir() if p.is_dir())
+    (index_dir / "manifest.json").write_text("{}")
+    client = client_for(indexed)
+    for response in (
+        client.get("/api/v1/ready"),
+        client.post("/api/v1/search", json={"query": "x"}),
+    ):
+        assert response.status_code == 503
+        assert str(indexed) not in response.text and "/tmp" not in response.text
+
+
+def test_warnings_survive_failures(indexed, monkeypatch):
+    from politica_monetaria_banrep_rag.generation import GenerationError
+
+    monkeypatch.setenv("BANREP_OLLAMA_URL", "http://ollama.ejemplo:11434")
+    down = FakeGenerator(error=GenerationError("Ollama no responde"))
+    response = client_for(indexed, down).post("/api/v1/query", json={"question": "inflación"})
+    assert response.status_code == 503
+    assert any("saldrán del equipo" in w for w in response.json()["warnings"])
+
+
+def test_invalid_json_docs_disabled_and_headers_on_500(indexed, monkeypatch):
+    client = client_for(indexed)
+    bad = client.post(
+        "/api/v1/search", content=b"{no es json", headers={"Content-Type": "application/json"}
+    )
+    assert bad.status_code == 422 and "no es JSON válido" in bad.json()["detail"]
+    assert client.get("/api/v1/docs").status_code == 404
+    assert client.get("/api/v1/openapi.json").status_code == 200
+    from politica_monetaria_banrep_rag import service
+
+    monkeypatch.setattr(service.RagService, "reports", lambda self: 1 / 0)
+    crash = client.get("/api/v1/reports")
+    assert crash.status_code == 500 and crash.headers["X-Content-Type-Options"] == "nosniff"
+
+
+def test_production_hosts_exclude_the_test_host(indexed):
+    service = RagService(
+        indexed, ollama_probe=lambda: {"available": False, "models": [], "url": ""}
+    )
+    client = TestClient(create_app(service), raise_server_exceptions=False)
+    assert client.get("/api/v1/health").status_code == 400  # «testserver» no es un host local
+
+
+def test_servir_accepts_ipv6_loopback(monkeypatch, capsys, tmp_path):
+    from politica_monetaria_banrep_rag import cli
+
+    started = {}
+    monkeypatch.setattr("uvicorn.run", lambda app, **kwargs: started.update(kwargs))
+    code, out, _ = run_cli(monkeypatch, capsys, "servir", "--host", "::1", "--data-dir",
+                           str(tmp_path))  # fmt: skip
+    assert code == 0 and started["host"] == "::1" and cli is not None
+
+
+def test_cli_prints_privacy_warning_even_when_query_fails(indexed, monkeypatch, capsys):
+    from politica_monetaria_banrep_rag import cli
+    from politica_monetaria_banrep_rag.generation import GenerationError
+
+    monkeypatch.setenv("BANREP_OLLAMA_URL", "http://ollama.ejemplo:11434")
+    down = FakeGenerator(error=GenerationError("Ollama no responde"))
+    monkeypatch.setattr(cli, "OllamaGenerator", lambda model, base_url: down)
+    code, _, err = run_cli(monkeypatch, capsys, "consultar", "inflación", "--modo", "lexico",
+                           "--data-dir", str(indexed))  # fmt: skip
+    assert code == 1 and err.count("saldrán del equipo") == 1 and "Ollama no responde" in err
+    code, _, err = run_cli(monkeypatch, capsys, "buscar", "inflación", "--modo", "lexico",
+                           "--data-dir", str(indexed))  # fmt: skip
+    assert code == 0 and "saldrán del equipo" not in err  # la vía léxica no contacta a Ollama

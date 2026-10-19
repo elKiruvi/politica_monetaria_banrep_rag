@@ -1,6 +1,7 @@
 """Punto de entrada de los comandos del proyecto."""
 
 import argparse
+import ipaddress
 import json
 import os
 import sys
@@ -22,7 +23,6 @@ from politica_monetaria_banrep_rag.embeddings import (
     DEFAULT_OLLAMA_URL,
     EmbeddingError,
     OllamaEmbeddings,
-    is_local_url,
 )
 from politica_monetaria_banrep_rag.evaluation import evaluate, load_queries, unresolved
 from politica_monetaria_banrep_rag.generation import (
@@ -312,14 +312,8 @@ def _index_status(root: Path, active: ActiveIndex) -> dict[str, object]:
 
 
 def _ollama(model: str) -> OllamaEmbeddings:
-    url = os.getenv("BANREP_OLLAMA_URL") or DEFAULT_OLLAMA_URL
-    if not is_local_url(url):
-        print(
-            f"Aviso: Ollama no es local ({url}); los fragmentos y las consultas saldrán "
-            "del equipo.",
-            file=sys.stderr,
-        )
-    return OllamaEmbeddings(model, base_url=url)
+    """Proveedor de embeddings; el aviso de privacidad lo emite quien lo usa, una sola vez."""
+    return OllamaEmbeddings(model, base_url=os.getenv("BANREP_OLLAMA_URL") or DEFAULT_OLLAMA_URL)
 
 
 def _resolve_mode(active: ActiveIndex, mode: str) -> str:
@@ -367,6 +361,8 @@ def _index(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
                 or DEFAULT_EMBEDDING_MODEL
             )
             embedder = None if args.sin_embeddings else _ollama(model)
+            if embedder is not None:
+                _print_warnings(RagService(root).privacy_warnings())
             result = manager.build(
                 lambda: load_corpus(catalog, store),
                 snapshot,
@@ -515,6 +511,7 @@ _EXIT_CODES = {"invalid": 2, "not_found": 2, "unavailable": 1}
 
 
 def _fail(parser: argparse.ArgumentParser, prefix: str, exc: ServiceError) -> None:
+    _print_warnings(exc.warnings)  # p. ej., el aviso de privacidad, aunque la operación falle
     parser.exit(_EXIT_CODES.get(exc.kind, 1), f"{prefix}: {exc}\n")
 
 
@@ -751,9 +748,16 @@ def _summarize(parser: argparse.ArgumentParser, args: argparse.Namespace) -> Non
     _print_answer(result.answer)
 
 
+def _is_local_host(host: str) -> bool:
+    try:
+        return host == "localhost" or ipaddress.ip_address(host.strip("[]")).is_loopback
+    except ValueError:
+        return False
+
+
 def _serve(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     """API y web locales; exponerlas a la red exige una decisión explícita."""
-    if not is_local_url(f"http://{args.host}") and not args.permitir_red:
+    if not _is_local_host(args.host) and not args.permitir_red:
         parser.exit(
             2,
             f"Error: {args.host} no es una dirección local. La aplicación no tiene "

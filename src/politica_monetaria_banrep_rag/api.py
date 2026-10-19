@@ -14,14 +14,26 @@ from fastapi import FastAPI, Request
 from fastapi.exceptions import RequestValidationError
 from fastapi.responses import Response
 from pydantic import BaseModel, ConfigDict, Field
+from starlette.exceptions import HTTPException
 from starlette.middleware.trustedhost import TrustedHostMiddleware
+from starlette.types import ASGIApp, Message, Receive, Scope, Send
 
 from politica_monetaria_banrep_rag.retrieval import SearchFilters
 from politica_monetaria_banrep_rag.service import DISCLAIMER, RagService, ServiceError
 
 API_VERSION = "v1"
 MAX_BODY_BYTES = 16_384
-LOCAL_HOSTS = ["127.0.0.1", "localhost", "[::1]", "testserver"]
+LOCAL_HOSTS = ["127.0.0.1", "localhost", "[::1]"]
+SECURITY_HEADERS = {
+    "X-Content-Type-Options": "nosniff",
+    "X-Frame-Options": "DENY",
+    "Referrer-Policy": "no-referrer",
+    "Content-Security-Policy": (
+        "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
+        "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
+    ),
+    "Cache-Control": "no-store",
+}
 _STATUS = {"invalid": 422, "not_found": 404, "unavailable": 503}
 Period = Annotated[str, Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$")]
 ReportId = Annotated[str, Field(pattern=r"^(ipm-)?\d{4}-\d{2}$")]
@@ -90,46 +102,80 @@ class SummarizeRequest(BaseModel):
 def _json(content: object, status_code: int = 200) -> Response:
     """JSON con ``Decimal`` como texto (sin pérdida de precisión) y sin escapar el español."""
     body = json.dumps(content, ensure_ascii=False, default=str)
-    return Response(body, status_code=status_code, media_type="application/json")
+    return Response(
+        body, status_code=status_code, media_type="application/json", headers=SECURITY_HEADERS
+    )
 
 
-def _error(status_code: int, message: str) -> Response:
-    return _json({"detail": message, "disclaimer": DISCLAIMER}, status_code)
+def _error(status_code: int, message: str, warnings: list[str] | None = None) -> Response:
+    return _json(
+        {"detail": message, "warnings": warnings or [], "disclaimer": DISCLAIMER}, status_code
+    )
+
+
+class BodyLimitMiddleware:
+    """Corta en 413 cualquier cuerpo mayor que ``limit`` bytes, con ``Content-Length`` o sin él
+    (``Transfer-Encoding: chunked``): cuenta lo recibido en lugar de confiar en la cabecera."""
+
+    def __init__(self, app: ASGIApp, limit: int) -> None:
+        self.app = app
+        self.limit = limit
+
+    async def __call__(self, scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] != "http":
+            await self.app(scope, receive, send)
+            return
+        length = dict(scope["headers"]).get(b"content-length")
+        if length is not None and (not length.isdigit() or int(length) > self.limit):
+            await _error(413, "La solicitud es demasiado grande.")(scope, receive, send)
+            return
+        received = 0
+
+        async def limited() -> Message:
+            nonlocal received
+            message = await receive()
+            if message["type"] == "http.request":
+                received += len(message.get("body", b""))
+                if received > self.limit:
+                    raise HTTPException(413, "La solicitud es demasiado grande.")
+            return message
+
+        await self.app(scope, limited, send)
 
 
 def create_app(service: RagService, *, allowed_hosts: list[str] | None = None) -> FastAPI:
     app = FastAPI(
         title="Informes de Política Monetaria — consulta local (no oficial)",
         version="0.1.0",
-        docs_url=f"/api/{API_VERSION}/docs",
+        # Sin Swagger/ReDoc: cargan recursos de un CDN y la CSP los bloquea. Queda el esquema.
+        docs_url=None,
         redoc_url=None,
         openapi_url=f"/api/{API_VERSION}/openapi.json",
     )
+    app.add_middleware(BodyLimitMiddleware, limit=MAX_BODY_BYTES)
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=allowed_hosts or LOCAL_HOSTS)
     generation_lock = threading.Lock()
 
     @app.middleware("http")
     async def security(request: Request, call_next):  # type: ignore[no-untyped-def]
-        length = request.headers.get("content-length")
-        if length is not None and (not length.isdigit() or int(length) > MAX_BODY_BYTES):
-            return _error(413, "La solicitud es demasiado grande.")
         response = await call_next(request)
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.headers["X-Frame-Options"] = "DENY"
-        response.headers["Referrer-Policy"] = "no-referrer"
-        response.headers["Content-Security-Policy"] = (
-            "default-src 'self'; img-src 'self' data:; style-src 'self'; script-src 'self'; "
-            "frame-ancestors 'none'; base-uri 'none'; form-action 'self'"
-        )
-        response.headers["Cache-Control"] = "no-store"
+        response.headers.update(SECURITY_HEADERS)
         return response
 
     @app.exception_handler(ServiceError)
     async def service_error(request: Request, exc: ServiceError) -> Response:
-        return _error(_STATUS.get(exc.kind, 500), str(exc))
+        return _error(_STATUS.get(exc.kind, 500), str(exc), exc.warnings)
+
+    @app.exception_handler(HTTPException)
+    async def http_error(request: Request, exc: HTTPException) -> Response:
+        messages = {404: "Ruta no encontrada.", 405: "Método no permitido."}
+        detail = exc.detail if exc.status_code == 413 else messages.get(exc.status_code)
+        return _error(exc.status_code, str(detail or "Solicitud no válida."))
 
     @app.exception_handler(RequestValidationError)
     async def invalid(request: Request, exc: RequestValidationError) -> Response:
+        if any(e.get("type") == "json_invalid" for e in exc.errors()):
+            return _error(422, "El cuerpo de la solicitud no es JSON válido.")
         fields = sorted({".".join(str(p) for p in e["loc"][1:]) for e in exc.errors()})
         return _error(422, "Solicitud inválida en: " + (", ".join(fields) or "cuerpo") + ".")
 

@@ -14,7 +14,7 @@
 | F4 Procesamiento | #5 | **completada**; H1–H5 fusionadas (PR #32–#36) | ADR 0006 |
 | F5 Indexación y recuperación | #6 | **cerrada**: FTS5, FAISS, RRF híbrida, manifiesto, reversión, evaluación | ADR 0007, 0008 |
 | F6 Generación y comparación | #7 | **cerrada**: `consultar` verificado, `comparar` determinista, `resumir` trazable | ADR 0009, 0010 |
-| F7 Producto | #8 | **F7A en curso**: servicio compartido y API FastAPI local; web y reportes pendientes | ADR 0011 |
+| F7 Producto | #8 | **F7A en revisión** (PR #41): servicio compartido, API FastAPI local, `servir`; **F7B** (web) preparada en la rama `feat/web-ui` sin PR; **F7C** (reportes) pendiente | ADR 0011 |
 | F8–F10 | #9–#11 | pendientes | — |
 
 ## Qué funciona hoy (comandos reales)
@@ -24,6 +24,7 @@
 - `indexar`, `buscar`, `validar-indice`, `evaluar`: índice léxico en < 1 s y vectores `embeddinggemma` en ~80 s (GPU). Nivel evidencia, k=5: léxica MRR 0,562; híbrida 0,687, R@5 0,714 (ADR 0007, 0008).
 - `consultar`: respuestas con Qwen verificadas; 13/14 respondidas, abstención 3/3, p50 3 s (ADR 0009).
 - `comparar` y `resumir`: IPC total 2025, enero → julio de 2025: 4,05 % → 4,7 % (+0,65 pp, revisión de proyección) (ADR 0010).
+- `servir` (PR #41): API `/api/v1` local con las mismas operaciones; prueba de humo real con Qwen y embeddinggemma (ADR 0011).
 
 ## Evidencia de acceso (16-10-2026)
 
@@ -44,10 +45,46 @@
 
 ## Pendiente y riesgos conocidos
 
-1. **F7B–F7C:** interfaz web (plantillas locales, sin CDN) y reportes descargables (Markdown y PDF/HTML imprimible) sobre el servicio; después F8 (detector y Docker). Reranker diferido a F9.
-2. **F3/#4, #18:** sincronización real N=12 y repetición sin descargas.
-3. F4: enero de 2025 degradado (8 cuadros como `table_raw`); heurísticas ajustadas a 2025–2026; informes 2023–2024 sin validar.
-4. Windows no probado; acciones fijadas por etiqueta (revisar en F9).
+### Trabajo en curso (19-10-2026)
+
+- **PR #41 (F7A):** se corrigieron los hallazgos de la revisión independiente (0 altos; 4 medios). Falta la confirmación del revisor y la CI del nuevo SHA; después, fusionar y verificar la CI de `main`.
+- **F7B, interfaz web:** rama `feat/web-ui`, apilada sobre F7A, en el worktree `../politica_monetaria_banrep_rag-worktrees/f7b-web`, todavía sin commit ni PR.
+  - Contenido: HTML, CSS y JS propios en `src/politica_monetaria_banrep_rag/web/static`, servidos en `/`, sin CDN ni scripts en línea; el texto de los PDF se inserta solo con `textContent`. Hay 10 pruebas en `tests/test_web.py`.
+  - Comprobado con el servidor real: todas las llamadas de la página responden.
+  - **Falta la revisión visual en un navegador** (no hay herramienta de navegador en esta sesión): abrir `http://127.0.0.1:8000` tras `banrep-rag servir` y probar cada pestaña.
+  - Pasos: rebasar sobre `main` tras fusionar #41, ajustar `allowed_hosts` de las pruebas (`testserver`), abrir PR y revisión.
+
+### Fases siguientes
+
+1. **F7C, reportes descargables (#8):** exportar consultas, comparaciones y resúmenes a Markdown y PDF, o HTML imprimible si el PDF no es viable. Cada reporte incluye título, fecha, informes, metodología, unidades, horizontes, citas, advertencias, estado del corpus y declaración no oficial, sin rutas personales. Al terminar, cerrar #8 con el flujo completo PDF → índice → consulta → citas → reporte por CLI, API y web.
+2. **F8, automatización y Docker (#9):**
+   - Detector de publicaciones en GitHub Actions con Crossref, que distinga sin cambios, nuevo informe, documento actualizado, error de red y bloqueo, sin issues duplicados.
+   - Sincronización e indexación local con reversión.
+   - Dockerfile y Compose: usuario no root, volúmenes, healthcheck, Ollama en el host o en contenedor, CPU y GPU.
+   - No publicar PDF en artefactos ni imágenes.
+3. **F9, evaluación, seguridad y rendimiento (#10):**
+   - Ampliar `evaluacion/` (más de 14 consultas, juicios sin pooling léxico, consultas sin respuesta).
+   - Integrar en `evaluar` la evaluación automática de respuestas (hoy es un script aparte): fidelidad, citas, abstención y consistencia numérica.
+   - Reevaluar el reranker y la calibración del umbral de abstención (0,45, poco margen).
+   - Auditoría de dependencias (`uv audit` o similar), Gitleaks, permisos y fijación por SHA de las acciones de GitHub.
+   - CI en Windows.
+   - P50 y P95 de cada etapa y consumo de RAM y VRAM.
+4. **F10, auditoría final (#11):** clon limpio, revisión independiente completa, pruebas de extremo a extremo y documentación final.
+
+### Pendientes externos y limitaciones conocidas
+
+- **F3, #4 y #18:** sincronización real de los últimos 12 informes y repetición sin descargas. Desde Ubuntu, Radware bloquea la descarga desde la primera solicitud (no se elude). El corpus actual son **cinco informes importados**, no los últimos 12.
+- **F4:**
+  - Enero de 2025 está degradado (8 cuadros como `table_raw`).
+  - Las heurísticas están ajustadas a 2025–2026; los informes de 2023–2024 no se han validado.
+  - En el Anexo 2, filas homónimas sin su grupo padre («Porcentaje del PIB») quedan ambiguas.
+- **Generación:**
+  - La verificación de cifras comprueba presencia, no interpretación: un resumen presentó la mediana de los analistas como dato.
+  - Una inyección que cite su propio bloque no se detecta.
+- **Producto:**
+  - La API no tiene autenticación ni TLS y atiende la generación de una en una.
+  - `/ready` es costosa: calcula el hash de los PDF.
+- **Plataformas y CI:** Windows no se ha probado. Las acciones de GitHub están fijadas por etiqueta (revisar en F9).
 
 ## Cómo retomar
 
@@ -57,4 +94,4 @@ uv sync --frozen && uv run --frozen pytest -q
 uv run --frozen banrep-rag estado --data-dir data/catalogo
 uv run --frozen banrep-rag indexar --data-dir data/catalogo && uv run --frozen banrep-rag evaluar --data-dir data/catalogo
 ```
-Leer `CLAUDE.md` y las ADR 0001–0011; continuar con F7B en una rama nueva desde `main`.
+Leer `CLAUDE.md` y las ADR 0001–0011. Retomar por «Trabajo en curso»: fusionar #41, rebasar `feat/web-ui`, abrir su PR y seguir con F7C.

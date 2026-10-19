@@ -522,3 +522,22 @@ def test_cli_resumir_restricts_to_the_report(catalog_root, monkeypatch, capsys):
     assert "Resume lo que dice el Informe de Política Monetaria de 2025-01" in fake.calls[0][1]
     code, _, err = run_cli(monkeypatch, capsys, "resumir", "2019-01", "--data-dir", data)
     assert code == 2 and "no está indexado" in err
+
+
+def test_evidence_is_limited_to_the_context_budget():
+    from politica_monetaria_banrep_rag.answering import MAX_EVIDENCE_CHARS
+
+    long_text = "La inflación sería 4,7 %. " + "texto " * 220
+    hits = [hit(chunk(f"b{i}", "2025-07", long_text + str(i)), i) for i in range(1, 25)]
+    generator = FakeGenerator(
+        {"answer": "Sería 4,7 % [E1].", "citations": ["E1"], "insufficient_evidence": False}
+    )
+    answer_question("¿Inflación?", hits, lambda c: [], generator)
+    user = generator.calls[0][1]
+    sent = user.count("<evidencia id=")
+    assert 1 <= sent < 24
+    assert len(user) < MAX_EVIDENCE_CHARS + 1000
+    # Un bloque omitido no puede citarse.
+    generator.result = {"answer": "Sería 4,7 % [E24].", "citations": ["E24"],
+                        "insufficient_evidence": False}  # fmt: skip
+    assert answer_question("¿Inflación?", hits, lambda c: [], generator).status == "rejected"
