@@ -112,7 +112,7 @@ class OllamaEmbeddings:
         if not 1 <= batch_size <= 256:
             raise ValueError("El tamaño de lote debe estar entre 1 y 256.")
         # Ollama lista los modelos sin etiqueta como «:latest»; un solo nombre por modelo.
-        self.model = model if ":" in model else f"{model}:latest"
+        self.model = model if ":" in model.rsplit("/", 1)[-1] else f"{model}:latest"
         self.base_url = base_url.rstrip("/")
         self.batch_size = batch_size
         # Conexión corta: un host que no responde falla en segundos, no en minutos.

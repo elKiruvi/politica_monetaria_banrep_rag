@@ -5,9 +5,11 @@ import json
 import os
 import sys
 from contextlib import ExitStack
+from dataclasses import asdict, replace
 from pathlib import Path
 
 from politica_monetaria_banrep_rag import diagnostics
+from politica_monetaria_banrep_rag.answering import Answer, answer_question, detect_reports
 from politica_monetaria_banrep_rag.catalog import Catalog, CatalogError
 from politica_monetaria_banrep_rag.corpus import CorpusError, load_corpus
 from politica_monetaria_banrep_rag.crossref import CrossrefReportSource
@@ -20,6 +22,11 @@ from politica_monetaria_banrep_rag.embeddings import (
     is_local_url,
 )
 from politica_monetaria_banrep_rag.evaluation import evaluate, load_queries, unresolved
+from politica_monetaria_banrep_rag.generation import (
+    DEFAULT_GENERATION_MODEL,
+    GenerationError,
+    OllamaGenerator,
+)
 from politica_monetaria_banrep_rag.importer import ImportFileError
 from politica_monetaria_banrep_rag.index_store import (
     ActiveIndex,
@@ -38,6 +45,9 @@ from politica_monetaria_banrep_rag.retrieval import (
 from politica_monetaria_banrep_rag.source import BanrepSource, ReportSource, SourceError
 
 SOURCES = ("crossref", "historico")
+DISCLAIMER = (
+    "Proyecto no oficial: no representa al Banco de la República ni es asesoría financiera."
+)
 
 
 def _make_source(name: str) -> ReportSource:
@@ -332,6 +342,25 @@ def _embedder_for(active: ActiveIndex, mode: str) -> OllamaEmbeddings | None:
     return _ollama(str(embedding["model"]))
 
 
+def _retrieve(
+    active: ActiveIndex, query: str, filters: SearchFilters, top_k: int, requested: str
+) -> tuple[list[RetrievalHit], str]:
+    """Recupera con el modo pedido; «auto» degrada a la vía léxica si Ollama falla."""
+    mode = _resolve_mode(active, requested)
+    embedder = None
+    try:
+        embedder = _embedder_for(active, mode)
+        return active.search(query, filters, top_k=top_k, mode=mode, embedder=embedder), mode
+    except (IndexStoreError, EmbeddingError) as exc:
+        if requested != "auto" or mode == "lexico":
+            raise
+        print(f"Aviso: vía semántica no disponible ({exc}); se usa la léxica.", file=sys.stderr)
+        return active.search(query, filters, top_k=top_k, mode="lexico"), "lexico"
+    finally:
+        if embedder is not None:
+            embedder.close()
+
+
 def _index(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     root = _data_dir(args)
     manager = IndexManager(root)
@@ -491,35 +520,15 @@ def _print_hit(hit: RetrievalHit, notes: list[str]) -> None:
 def _search(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
     root = _data_dir(args)
     try:
-        filters = SearchFilters(
-            report_ids=tuple(args.informe or ()),
-            period_from=args.desde,
-            period_to=args.hasta,
-            section=args.seccion,
-            kinds=tuple(args.tipo or ()),
-            evidence_qualities=tuple(args.calidad or ()),
-        )
+        filters = _filters(args)
     except ValueError as exc:
         parser.exit(2, f"Error: {exc}\n")
     try:
         active = IndexManager(root).open_active()
     except IndexStoreError as exc:
         parser.exit(1, f"Error de búsqueda: {exc}\n")
-    embedder = None
     try:
-        mode = _resolve_mode(active, args.modo)
-        try:
-            embedder = _embedder_for(active, mode)
-            hits = active.search(
-                args.consulta, filters, top_k=args.top_k, mode=mode, embedder=embedder
-            )
-        except (IndexStoreError, EmbeddingError) as exc:
-            if args.modo != "auto" or mode == "lexico":
-                raise
-            # «auto» nunca deja sin respuesta: degrada a la vía léxica y lo dice.
-            print(f"Aviso: vía semántica no disponible ({exc}); se usa la léxica.", file=sys.stderr)
-            mode = "lexico"
-            hits = active.search(args.consulta, filters, top_k=args.top_k, mode=mode)
+        hits, mode = _retrieve(active, args.consulta, filters, args.top_k, args.modo)
         notes = {
             hit.chunk.chunk_id: [note.text for note in active.table_notes(hit.chunk)]
             for hit in hits
@@ -535,8 +544,6 @@ def _search(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         parser.exit(1, f"Error de búsqueda: {exc}\n")
     finally:
         active.close()
-        if embedder is not None:
-            embedder.close()
     if args.json:
         rows = [{**hit.to_dict(), "table_notes": notes[hit.chunk.chunk_id]} for hit in hits]
         payload = {"index_id": active.index_id, "mode": mode, "query": args.consulta,
@@ -553,6 +560,127 @@ def _search(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
         return
     for hit in hits:
         _print_hit(hit, notes[hit.chunk.chunk_id])
+
+
+def _filters(args: argparse.Namespace) -> SearchFilters:
+    return SearchFilters(
+        report_ids=tuple(args.informe or ()),
+        period_from=args.desde,
+        period_to=args.hasta,
+        section=args.seccion,
+        kinds=tuple(args.tipo or ()),
+        evidence_qualities=tuple(args.calidad or ()),
+    )
+
+
+def _print_answer(answer: Answer) -> None:
+    labels = {
+        "answered": "Respuesta",
+        "insufficient_evidence": "Sin respuesta (evidencia insuficiente)",
+        "rejected": "Respuesta rechazada por la verificación",
+    }
+    print(f"{labels[answer.status]}:\n{answer.text}")
+    if answer.reason:
+        print(f"Motivo: {answer.reason}")
+    shown = answer.citations or (answer.evidence if answer.status != "answered" else ())
+    if shown:
+        print("\nFuentes citadas:" if answer.citations else "\nEvidencia revisada:")
+    for citation in shown:
+        pages = (
+            f"pág. {citation.page_start}"
+            if citation.page_start == citation.page_end
+            else f"págs. {citation.page_start}-{citation.page_end}"
+        )
+        printed = f" (impresa {', '.join(citation.page_labels)})" if citation.page_labels else ""
+        source = citation.source_url or "(sin URL verificada)"
+        print(
+            f"  [{citation.label}] {citation.report_title} ({citation.reference_period}), "
+            f"{pages} del PDF{printed}; {citation.evidence_quality}. {source}"
+        )
+    print(f"\n{DISCLAIMER}")
+
+
+def _query(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    root = _data_dir(args)
+    try:
+        filters = _filters(args)
+    except ValueError as exc:
+        parser.exit(2, f"Error: {exc}\n")
+    try:
+        active = IndexManager(root).open_active()
+    except IndexStoreError as exc:
+        parser.exit(1, f"Error de consulta: {exc}\n")
+    model = args.modelo or os.getenv("BANREP_GENERATION_MODEL") or DEFAULT_GENERATION_MODEL
+    generator = None
+    try:
+        detected: tuple[str, ...] = ()
+        if not (filters.report_ids or filters.period_from or filters.period_to):
+            periods = {r.reference_period: r.report_id for r in active.lexical.reports.values()}
+            detected, absent = detect_reports(args.pregunta, periods)
+            if absent:
+                print(
+                    f"Aviso: informes nombrados que no están indexados: {', '.join(absent)}.",
+                    file=sys.stderr,
+                )
+            if detected:
+                filters = replace(filters, report_ids=detected)
+                print(
+                    f"Informes mencionados en la pregunta: {', '.join(detected)}.",
+                    file=sys.stderr if args.json else sys.stdout,
+                )
+        hits, mode = _retrieve(active, args.pregunta, filters, args.top_k, args.modo)
+        embedding = active.embedding if mode != "lexico" else None
+        url = os.getenv("BANREP_OLLAMA_URL") or DEFAULT_OLLAMA_URL
+        if not is_local_url(url):
+            print(
+                f"Aviso: Ollama no es local ({url}); la pregunta y la evidencia saldrán "
+                "del equipo.",
+                file=sys.stderr,
+            )
+        generator = OllamaGenerator(model, base_url=url)
+        answer = answer_question(
+            args.pregunta,
+            hits,
+            active.table_notes,
+            generator,
+            embedding_model=str(embedding["model"]) if embedding else None,
+        )
+        status = _index_status(root, active)
+    except ValueError as exc:
+        parser.exit(2, f"Error: {exc}\n")
+    except GenerationError as exc:
+        parser.exit(
+            1,
+            f"Error de generación: {exc}\nPuede consultar la evidencia con «banrep-rag buscar».\n",
+        )
+    except (IndexStoreError, EmbeddingError) as exc:
+        parser.exit(
+            1, f"Error de consulta: {exc}\nLa vía léxica no necesita Ollama: «--modo lexico».\n"
+        )
+    except CatalogError as exc:
+        parser.exit(1, f"Error de consulta: {exc}\n")
+    finally:
+        active.close()
+        if generator is not None:
+            generator.close()
+    if args.json:
+        payload = {
+            "index_id": active.index_id,
+            "retrieval_mode": mode,
+            "generation_model": model,
+            "question": args.pregunta,
+            "detected_reports": list(detected),
+            **asdict(answer),
+            "disclaimer": DISCLAIMER,
+            "corpus": status,
+        }
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    warnings = status["warnings"]
+    assert isinstance(warnings, list)
+    for warning in warnings:
+        print(f"Aviso: {warning}")
+    _print_answer(answer)
 
 
 def _evaluate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
@@ -621,6 +749,15 @@ def _evaluate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None
     print(f"  Latencia por consulta: p50 {latency['p50']} ms, p95 {latency['p95']} ms.")
     if result["skipped_missing_reports"]:
         print(f"  Omitidas (informes no indexados): {result['skipped_missing_reports']}")
+
+
+def _add_filters(command: argparse.ArgumentParser) -> None:
+    command.add_argument("--informe", action="append", metavar="ipm-AAAA-MM")
+    command.add_argument("--desde", metavar="AAAA-MM", help="Periodo de referencia inicial")
+    command.add_argument("--hasta", metavar="AAAA-MM", help="Periodo de referencia final")
+    command.add_argument("--seccion", help="Texto contenido en el nombre de la sección")
+    command.add_argument("--tipo", action="append", choices=sorted(CHUNK_KINDS))
+    command.add_argument("--calidad", action="append", choices=sorted(EVIDENCE_QUALITIES))
 
 
 def main() -> None:
@@ -733,13 +870,27 @@ def main() -> None:
         "--top-k", type=int, default=5, choices=range(1, 51), metavar="K",
         help="Cantidad de resultados (1 a 50; por defecto 5)",
     )  # fmt: skip
-    search_cmd.add_argument("--informe", action="append", metavar="ipm-AAAA-MM")
-    search_cmd.add_argument("--desde", metavar="AAAA-MM", help="Periodo de referencia inicial")
-    search_cmd.add_argument("--hasta", metavar="AAAA-MM", help="Periodo de referencia final")
-    search_cmd.add_argument("--seccion", help="Texto contenido en el nombre de la sección")
-    search_cmd.add_argument("--tipo", action="append", choices=sorted(CHUNK_KINDS))
-    search_cmd.add_argument("--calidad", action="append", choices=sorted(EVIDENCE_QUALITIES))
+    _add_filters(search_cmd)
     search_cmd.add_argument("--json", action="store_true", help="Emite resultados en JSON")
+    query_cmd = subcommands.add_parser(
+        "consultar", help="Responde una pregunta con evidencia citada (Ollama local)"
+    )
+    query_cmd.add_argument("pregunta", help="Pregunta en lenguaje natural")
+    query_cmd.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
+    query_cmd.add_argument(
+        "--modo", choices=SEARCH_MODES, default="auto", help="Vía de recuperación de evidencia"
+    )
+    query_cmd.add_argument(
+        "--top-k", type=int, default=6, choices=range(1, 13), metavar="K",
+        help="Fragmentos de evidencia para el modelo (1 a 12; por defecto 6)",
+    )  # fmt: skip
+    query_cmd.add_argument(
+        "--modelo",
+        help=f"Modelo de generación de Ollama (o BANREP_GENERATION_MODEL; por defecto "
+        f"{DEFAULT_GENERATION_MODEL})",
+    )
+    _add_filters(query_cmd)
+    query_cmd.add_argument("--json", action="store_true", help="Emite la respuesta en JSON")
     validate_cmd = subcommands.add_parser(
         "validar-indice", help="Comprueba la integridad del índice activo y su vigencia"
     )
@@ -764,6 +915,7 @@ def main() -> None:
         "buscar": _search,
         "validar-indice": _validate_index,
         "evaluar": _evaluate,
+        "consultar": _query,
     }.get(args.command)
     if handler is not None:
         handler(parser, args)
@@ -779,8 +931,8 @@ def main() -> None:
         return
     if args.command == "diagnostico":
         print(
-            "Disponibles: sincronización, procesamiento, índice léxico y búsqueda; "
-            "la generación de respuestas aún no."
+            "Disponibles: sincronización, procesamiento, índice híbrido, búsqueda y consultas "
+            "con evidencia citada; las comparaciones entre informes aún no."
         )
     elif args.command == "diagnostico-fuentes":
         access = diagnostics.run(download_one=args.descargar_uno)
