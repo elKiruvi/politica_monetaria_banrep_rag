@@ -312,6 +312,56 @@ class ProcessedStore:
             return None
         return data
 
+    def _source_problem(self, report_id: str, pdf: dict[str, object]) -> str | None:
+        """Comprueba que el PDF del snapshot exista en el almacén seguro y conserve su hash."""
+        sha256 = str(pdf["sha256"])
+        expected = f"raw/{report_id}-{sha256}.pdf"
+        source = self.root / expected
+        if (
+            pdf.get("path") != expected
+            or (self.root / "raw").is_symlink()
+            or not source.is_file()
+            or source.is_symlink()
+        ):
+            return "falta el PDF seguro en el almacén local"
+        try:
+            with source.open("rb") as handle:
+                if hashlib.file_digest(handle, "sha256").hexdigest() != sha256:
+                    return "el PDF local no coincide con su hash"
+        except OSError as exc:
+            return f"no se pudo leer el PDF local: {exc}"
+        return None
+
+    def load_verified(self, record: dict[str, object]) -> dict[str, object]:
+        """Devuelve el resultado procesado de un registro del snapshot, solo si es íntegro.
+
+        Exige el PDF local con su hash, una caché válida para las versiones vigentes y los mismos
+        metadatos del snapshot; no procesa nada. Lanza ``CatalogError`` con el motivo.
+        """
+        report, pdf = record["report"], record["pdf"]
+        assert isinstance(report, dict) and isinstance(pdf, dict)
+        report_id, sha256 = str(report["report_id"]), str(pdf["sha256"])
+        target = self.path_for(report_id, sha256)
+        problem = self._source_problem(report_id, pdf)
+        if problem:
+            raise CatalogError(f"{report_id}: {problem}.")
+        data = self._load(target, report_id, sha256)
+        if data is None:
+            raise CatalogError(
+                f"{report_id}: no hay resultado procesado válido para las versiones vigentes; "
+                "ejecute «banrep-rag procesar»."
+            )
+        if data["report"] != report or data["pdf"] != pdf:
+            raise CatalogError(
+                f"{report_id}: el resultado procesado no corresponde al snapshot activo; "
+                "ejecute «banrep-rag procesar»."
+            )
+        return data
+
+    def versions(self) -> dict[str, object]:
+        """Versiones que determinan los fragmentos; forman parte de la firma de un índice."""
+        return self._versions()
+
     def _versions(self) -> dict[str, object]:
         return {
             "processing": PROCESSING_VERSION,
@@ -354,23 +404,10 @@ class ProcessedStore:
             assert isinstance(report, dict) and isinstance(pdf, dict)
             report_id, sha256 = str(report["report_id"]), str(pdf["sha256"])
             target = self.path_for(report_id, sha256)
-            expected = f"raw/{report_id}-{sha256}.pdf"
-            source = self.root / expected
-            if (
-                pdf.get("path") != expected
-                or (self.root / "raw").is_symlink()
-                or not source.is_file()
-                or source.is_symlink()
-            ):
-                failures.append((report_id, "falta el PDF seguro en el almacén local"))
-                continue
-            try:
-                with source.open("rb") as handle:
-                    if hashlib.file_digest(handle, "sha256").hexdigest() != sha256:
-                        failures.append((report_id, "el PDF local no coincide con su hash"))
-                        continue
-            except OSError as exc:
-                failures.append((report_id, f"no se pudo leer el PDF local: {exc}"))
+            source = self.root / f"raw/{report_id}-{sha256}.pdf"
+            problem = self._source_problem(report_id, pdf)
+            if problem:
+                failures.append((report_id, problem))
                 continue
             cached = None if force else self._load(target, report_id, sha256)
             if cached is not None:

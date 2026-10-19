@@ -41,7 +41,20 @@ El periodo se identifica con dos evidencias (portada con la serie junto al perio
 
 ## Procesamiento de los informes
 
-`uv run --frozen banrep-rag procesar` analiza los PDF del catálogo activo: separa columnas, títulos y secciones, reconstruye los cuadros con cada cifra junto a su fila, columna y unidad (y marca las proyecciones cuando el cuadro lo indica), conserva título y fuente de cada gráfico sin inventar sus datos, y genera fragmentos citables con página del PDF y página impresa. El resultado queda en `processed/` y se reutiliza mientras no cambien el PDF ni la versión del procesamiento (`--forzar` lo repite; `--procesos N` usa varios procesos). Cada informe muestra un resumen de calidad y se marca **degradado** si falta texto o fallan muchos cuadros. Detalles y mediciones en la [ADR 0006](docs/decisiones/0006-procesamiento-pdf.md). Aún no hay índice de búsqueda ni respuestas (fases F5 y F6).
+`uv run --frozen banrep-rag procesar` analiza los PDF del catálogo activo: separa columnas, títulos y secciones, reconstruye los cuadros con cada cifra junto a su fila, columna y unidad (y marca las proyecciones cuando el cuadro lo indica), conserva título y fuente de cada gráfico sin inventar sus datos, y genera fragmentos citables con página del PDF y página impresa. El resultado queda en `processed/` y se reutiliza mientras no cambien el PDF ni la versión del procesamiento (`--forzar` lo repite; `--procesos N` usa varios procesos). Cada informe muestra un resumen de calidad y se marca **degradado** si falta texto o fallan muchos cuadros. Detalles y mediciones en la [ADR 0006](docs/decisiones/0006-procesamiento-pdf.md).
+
+## Índice y búsqueda léxica
+
+```sh
+uv run --frozen banrep-rag indexar                     # construye y activa el índice del catálogo procesado
+uv run --frozen banrep-rag buscar "expectativas de inflación" --modo lexico
+uv run --frozen banrep-rag buscar "IPC total" --informe ipm-2025-07 --tipo table --json
+uv run --frozen banrep-rag validar-indice              # integridad del índice y vigencia de las fuentes
+uv run --frozen banrep-rag evaluar                     # métricas con consultas de relevancia verificada
+uv run --frozen banrep-rag indexar --revertir          # reactiva el índice anterior
+```
+
+`indexar` solo usa fragmentos verificados (PDF por hash, caché vigente y metadatos del snapshot); si algo falla, el índice activo anterior se conserva. Cada resultado muestra informe, periodo, página del PDF y página impresa, sección, tipo de unidad, calidad de evidencia, número de celdas atribuibles y, en filas de cuadros, sus notas vinculadas por `table_id`. Filtros: `--informe`, `--desde`/`--hasta` (AAAA-MM), `--seccion`, `--tipo` y `--calidad`. La búsqueda léxica no necesita Ollama; la semántica y la híbrida llegarán en F5B–F5C. Detalles y métricas en la [ADR 0007](docs/decisiones/0007-indice-lexico.md).
 
 El diagnóstico de investigación, incluido el bloqueo de las consultas paginadas a la fuente, está en [docs/arquitectura/diagnostico_inicial.md](docs/arquitectura/diagnostico_inicial.md). Las entregas pendientes se describen en los issues. No se exige ningún proveedor comercial para instalar la base.
 

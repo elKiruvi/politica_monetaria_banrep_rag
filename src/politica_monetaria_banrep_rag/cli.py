@@ -9,11 +9,25 @@ from pathlib import Path
 
 from politica_monetaria_banrep_rag import diagnostics
 from politica_monetaria_banrep_rag.catalog import Catalog, CatalogError
+from politica_monetaria_banrep_rag.corpus import CorpusError, load_corpus
 from politica_monetaria_banrep_rag.crossref import CrossrefReportSource
 from politica_monetaria_banrep_rag.download import DownloadError, PdfDownloader
+from politica_monetaria_banrep_rag.evaluation import evaluate, load_queries, unresolved
 from politica_monetaria_banrep_rag.importer import ImportFileError
+from politica_monetaria_banrep_rag.index_store import (
+    ActiveIndex,
+    IndexManager,
+    IndexStoreError,
+    corpus_status,
+)
 from politica_monetaria_banrep_rag.layout import LayoutError
 from politica_monetaria_banrep_rag.processed_store import ProcessedStore
+from politica_monetaria_banrep_rag.retrieval import (
+    CHUNK_KINDS,
+    EVIDENCE_QUALITIES,
+    RetrievalHit,
+    SearchFilters,
+)
 from politica_monetaria_banrep_rag.source import BanrepSource, ReportSource, SourceError
 
 SOURCES = ("crossref", "historico")
@@ -252,6 +266,224 @@ def _status(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
             )
 
 
+_KIND_LABELS = {
+    "paragraph": "párrafo",
+    "table": "fila de cuadro",
+    "table_notes": "notas de cuadro",
+    "table_raw": "cuadro sin columnas verificables",
+    "chart_caption": "título o fuente de gráfico",
+    "caption": "título",
+    "source_note": "fuente",
+    "footnote": "nota al pie",
+}
+
+
+def _index_status(root: Path, active: ActiveIndex) -> dict[str, object]:
+    """Estado del índice frente al catálogo activo y la vigencia efectiva de sus fuentes."""
+    catalog = _offline_catalog(root)
+    with catalog.source.client, catalog.downloader.client:
+        current = catalog.current()
+        records = current[1]["reports"] if current else []
+        assert isinstance(records, list)
+        verification = catalog.verification(records) if current else []
+    return corpus_status(active.manifest, current[0] if current else None, verification)
+
+
+def _index(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    root = _data_dir(args)
+    manager = IndexManager(root)
+    try:
+        if args.revertir:
+            index_id = manager.rollback()
+            print(f"Índice activo revertido a {index_id[:12]}.")
+            return
+        catalog = _offline_catalog(root)
+        with catalog.source.client, catalog.downloader.client:
+            store = ProcessedStore(root)
+
+            def snapshot() -> str | None:
+                current = catalog.current()
+                return current[0] if current else None
+
+            result = manager.build(lambda: load_corpus(catalog, store), snapshot, force=args.forzar)
+    except (CorpusError, IndexStoreError, CatalogError) as exc:
+        parser.exit(1, f"Error de indexación: {exc}\nEl índice activo anterior no cambió.\n")
+    except OSError as exc:
+        parser.exit(
+            1, f"Error de indexación: {_local_failure(exc)}\nEl índice activo anterior no cambió.\n"
+        )
+    manifest = result.manifest
+    if args.json:
+        print(json.dumps({"index_id": result.index_id, "created": result.created, **manifest},
+                         ensure_ascii=False, indent=2))  # fmt: skip
+        return
+    verb = "Índice creado y activado" if result.created else "Sin cambios: el índice activo"
+    reports = manifest["reports"]
+    assert isinstance(reports, list)
+    print(
+        f"{verb} {result.index_id[:12]} — {manifest['chunk_count']} fragmentos de "
+        f"{len(reports)} informes (snapshot {str(manifest['catalog_snapshot'])[:12]})."
+    )
+    if manifest["selection_mode"] == "local_import":
+        print("Aviso: corpus de importación local; no equivale a los últimos informes publicados.")
+
+
+def _validate_index(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    root = _data_dir(args)
+    try:
+        active = IndexManager(root).open_active()
+    except IndexStoreError as exc:
+        parser.exit(1, f"Índice no válido: {exc}\n")
+    try:
+        status = _index_status(root, active)
+    except CatalogError as exc:
+        status = {"index_matches_catalog": False, "warnings": [str(exc)], "reports": []}
+    finally:
+        active.close()
+    if args.json:
+        print(json.dumps({"index_id": active.index_id, "integrity": "ok", **status},
+                         ensure_ascii=False, indent=2))  # fmt: skip
+    else:
+        print(
+            f"Índice {active.index_id[:12]} íntegro: manifiesto, huellas de archivos y "
+            f"{active.manifest['chunk_count']} fragmentos verificados."
+        )
+        reports, warnings = status["reports"], status["warnings"]
+        assert isinstance(reports, list) and isinstance(warnings, list)
+        for report in reports:
+            print(f"  {report['report_id']} — vigencia: {report['verification_status']}")
+        for warning in warnings:
+            print(f"Aviso: {warning}")
+    if not status["index_matches_catalog"]:
+        parser.exit(3, "")
+
+
+def _print_hit(hit: RetrievalHit, notes: list[str]) -> None:
+    chunk, report = hit.chunk, hit.report
+    pages = (
+        f"pág. {chunk.page_start}"
+        if chunk.page_start == chunk.page_end
+        else f"págs. {chunk.page_start}-{chunk.page_end}"
+    )
+    printed = f" (impresa {', '.join(chunk.page_labels)})" if chunk.page_labels else ""
+    print(
+        f"{hit.rank}. {report.title} — periodo {report.reference_period}, {pages} del PDF{printed}"
+    )
+    print(f"   Sección: {' > '.join(chunk.section) or '(sin sección)'}")
+    print(
+        f"   Tipo: {_KIND_LABELS.get(chunk.kind, chunk.kind)} · calidad: {chunk.evidence_quality}"
+        f" · celdas atribuibles: {len(chunk.attributed_cells)} · BM25 {hit.lexical_bm25:.3f}"
+    )
+    excerpt = " ".join(chunk.text.split())
+    print(f"   {excerpt[:400]}{'…' if len(excerpt) > 400 else ''}")
+    if chunk.kind == "table_raw":
+        print("   Advertencia: cuadro sin estructura verificable; sus cifras no están atribuidas.")
+    if notes:
+        first = " ".join(notes[0].split())
+        print(
+            f"   Notas del cuadro ({len(notes)} fragmento(s), mismo table_id): "
+            f"{first[:240]}{'…' if len(first) > 240 else ''}"
+        )
+    print(f"   Fuente: {report.source_url or '(sin URL verificada en Crossref)'}")
+
+
+def _search(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    root = _data_dir(args)
+    try:
+        filters = SearchFilters(
+            report_ids=tuple(args.informe or ()),
+            period_from=args.desde,
+            period_to=args.hasta,
+            section=args.seccion,
+            kinds=tuple(args.tipo or ()),
+            evidence_qualities=tuple(args.calidad or ()),
+        )
+    except ValueError as exc:
+        parser.exit(2, f"Error: {exc}\n")
+    try:
+        active = IndexManager(root).open_active()
+    except IndexStoreError as exc:
+        parser.exit(1, f"Error de búsqueda: {exc}\n")
+    try:
+        hits = active.search(args.consulta, filters, top_k=args.top_k)
+        notes = {
+            hit.chunk.chunk_id: [note.text for note in active.table_notes(hit.chunk)]
+            for hit in hits
+        }
+        status = _index_status(root, active)
+    except ValueError as exc:
+        parser.exit(2, f"Error: {exc}\n")
+    except CatalogError as exc:
+        parser.exit(1, f"Error de búsqueda: {exc}\n")
+    finally:
+        active.close()
+    if args.json:
+        rows = [{**hit.to_dict(), "table_notes": notes[hit.chunk.chunk_id]} for hit in hits]
+        payload = {"index_id": active.index_id, "mode": args.modo, "query": args.consulta,
+                   "results": rows, "corpus": status}  # fmt: skip
+        print(json.dumps(payload, ensure_ascii=False, indent=2))
+        return
+    warnings = status["warnings"]
+    assert isinstance(warnings, list)
+    for warning in warnings:
+        print(f"Aviso: {warning}")
+    if not hits:
+        print("Sin resultados en el índice activo para esa consulta y esos filtros.")
+        return
+    for hit in hits:
+        _print_hit(hit, notes[hit.chunk.chunk_id])
+
+
+def _evaluate(parser: argparse.ArgumentParser, args: argparse.Namespace) -> None:
+    try:
+        queries = load_queries(args.consultas)
+    except (OSError, ValueError, KeyError, TypeError) as exc:
+        parser.exit(2, f"Error: consultas de evaluación no válidas ({exc}).\n")
+    try:
+        active = IndexManager(_data_dir(args)).open_active()
+    except IndexStoreError as exc:
+        parser.exit(1, f"Error de evaluación: {exc}\n")
+    try:
+        chunks = active.lexical.all_chunks()
+        problems = unresolved(queries, chunks)
+        if problems:
+            parser.exit(
+                1,
+                "Error: juicios sin evidencia en el índice (revise las consultas o el "
+                "procesamiento): " + "; ".join(problems) + "\n",
+            )
+        result = evaluate(
+            lambda text, filters, k: active.search(text, filters, top_k=k),
+            queries,
+            indexed_reports={chunk.report_id for chunk in chunks},
+            k=args.k,
+        )
+    finally:
+        active.close()
+    result = {"index_id": active.index_id, "mode": args.modo, **result}
+    if args.json:
+        print(json.dumps(result, ensure_ascii=False, indent=2))
+        return
+    print(
+        f"Evaluación {args.modo} en el índice {active.index_id[:12]}: {result['answerable']} "
+        f"consultas con respuesta y {int(str(result['queries'])) - int(str(result['answerable']))}"
+        f" sin respuesta; k={args.k}."
+    )
+    metrics = result["metrics"]
+    assert isinstance(metrics, dict)
+    for level, label in (("document", "documento"), ("page", "página"), ("evidence", "evidencia")):
+        values = metrics[level]
+        print(
+            f"  {label:<10} P@{args.k} {values['precision']:.3f}  R@{args.k} "
+            f"{values['recall']:.3f}  MRR {values['mrr']:.3f}  nDCG@{args.k} {values['ndcg']:.3f}"
+        )
+    latency = result["latency_ms"]
+    assert isinstance(latency, dict)
+    print(f"  Latencia por consulta: p50 {latency['p50']} ms, p95 {latency['p95']} ms.")
+    if result["skipped_missing_reports"]:
+        print(f"  Omitidas (informes no indexados): {result['skipped_missing_reports']}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(
         prog="banrep-rag", description="Consulta local de informes de política monetaria."
@@ -329,7 +561,62 @@ def main() -> None:
     status_cmd = subcommands.add_parser("estado", help="Muestra el catálogo local activo")
     status_cmd.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
     status_cmd.add_argument("--json", action="store_true", help="Emite el snapshot en JSON")
+    index_cmd = subcommands.add_parser(
+        "indexar", help="Construye y activa el índice de búsqueda del catálogo procesado"
+    )
+    index_cmd.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
+    index_cmd.add_argument(
+        "--forzar", action="store_true", help="Reconstruye aunque el índice activo esté al día"
+    )
+    index_cmd.add_argument(
+        "--revertir", action="store_true", help="Reactiva el índice anterior conservado"
+    )
+    index_cmd.add_argument("--json", action="store_true", help="Emite el manifiesto en JSON")
+    search_cmd = subcommands.add_parser("buscar", help="Busca fragmentos citables en el índice")
+    search_cmd.add_argument("consulta", help="Texto de la consulta")
+    search_cmd.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
+    search_cmd.add_argument(
+        "--modo", choices=("lexico",), default="lexico", help="Vía de recuperación"
+    )
+    search_cmd.add_argument(
+        "--top-k", type=int, default=5, choices=range(1, 51), metavar="K",
+        help="Cantidad de resultados (1 a 50; por defecto 5)",
+    )  # fmt: skip
+    search_cmd.add_argument("--informe", action="append", metavar="ipm-AAAA-MM")
+    search_cmd.add_argument("--desde", metavar="AAAA-MM", help="Periodo de referencia inicial")
+    search_cmd.add_argument("--hasta", metavar="AAAA-MM", help="Periodo de referencia final")
+    search_cmd.add_argument("--seccion", help="Texto contenido en el nombre de la sección")
+    search_cmd.add_argument("--tipo", action="append", choices=sorted(CHUNK_KINDS))
+    search_cmd.add_argument("--calidad", action="append", choices=sorted(EVIDENCE_QUALITIES))
+    search_cmd.add_argument("--json", action="store_true", help="Emite resultados en JSON")
+    validate_cmd = subcommands.add_parser(
+        "validar-indice", help="Comprueba la integridad del índice activo y su vigencia"
+    )
+    validate_cmd.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
+    validate_cmd.add_argument("--json", action="store_true", help="Emite el resultado en JSON")
+    evaluate_cmd = subcommands.add_parser(
+        "evaluar", help="Mide la recuperación con consultas de relevancia verificada"
+    )
+    evaluate_cmd.add_argument("--data-dir", help="Directorio del catálogo y los PDF locales")
+    evaluate_cmd.add_argument(
+        "--consultas", type=Path, default=Path("evaluacion/consultas_recuperacion.json"),
+        help="Archivo JSON de consultas y juicios",
+    )  # fmt: skip
+    evaluate_cmd.add_argument(
+        "--k", type=int, default=5, choices=range(1, 51), metavar="K", help="Corte (por defecto 5)"
+    )
+    evaluate_cmd.add_argument("--modo", choices=("lexico",), default="lexico")
+    evaluate_cmd.add_argument("--json", action="store_true", help="Emite el informe en JSON")
     args = parser.parse_args()
+    handler = {
+        "indexar": _index,
+        "buscar": _search,
+        "validar-indice": _validate_index,
+        "evaluar": _evaluate,
+    }.get(args.command)
+    if handler is not None:
+        handler(parser, args)
+        return
     if args.command == "importar":
         _import(parser, args)
         return
@@ -340,7 +627,10 @@ def main() -> None:
         _process(parser, args)
         return
     if args.command == "diagnostico":
-        print("La sincronización del catálogo está disponible; las consultas aún no.")
+        print(
+            "Disponibles: sincronización, procesamiento, índice léxico y búsqueda; "
+            "la generación de respuestas aún no."
+        )
     elif args.command == "diagnostico-fuentes":
         access = diagnostics.run(download_one=args.descargar_uno)
         if args.json:
