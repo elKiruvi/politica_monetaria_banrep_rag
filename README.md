@@ -2,7 +2,7 @@
 
 Software libre para explorar, de forma local, los informes del [Banco de la República](https://www.banrep.gov.co/es/publicaciones-investigaciones/informe-politica-monetaria/historico-informes). No existe afiliación con el Banco. El software no proporciona asesoría financiera.
 
-**Estado: en desarrollo.** Descubre los informes, sincroniza o importa un catálogo local y extrae texto, cuadros y fragmentos citables; aún no indexa ni responde preguntas. No hay un corpus precargado y los PDF del proyecto de referencia no se redistribuyen.
+**Estado: en desarrollo y auditoría correctiva.** Descubre informes, descarga cuando la fuente lo permite o importa PDF, procesa cuadros, indexa (FTS5/FAISS), busca, responde con citas, compara, resume y ofrece CLI, API y web locales. La verificación actual comprueba la presencia de cifras, pero todavía no garantiza su atribución económica a cada afirmación; no debe interpretarse como validación experta. F9 y F10 siguen pendientes. No hay un corpus precargado ni se redistribuyen los PDF.
 
 ## Instalación de desarrollo
 
@@ -80,7 +80,7 @@ uv run --frozen banrep-rag consultar "¿Cuál fue la proyección de inflación p
 uv run --frozen banrep-rag consultar "¿Qué dijo el Banco sobre el precio del petróleo en octubre de 2025?" --json
 ```
 
-La respuesta se redacta con Qwen local usando solo los fragmentos recuperados y se **verifica** antes de mostrarse: las citas deben existir y cada cifra debe figurar en la evidencia citada; si no, se muestra que fue rechazada junto con la evidencia revisada. Si la pregunta está fuera del alcance de los informes o la evidencia no basta, el sistema se abstiene. Un informe nombrado en la pregunta («informe de julio de 2025») restringe la búsqueda a ese informe. Límites y mediciones en la [ADR 0009](docs/decisiones/0009-respuestas-fundamentadas.md). Las respuestas no son asesoría financiera ni comunicaciones del Banco.
+La respuesta se redacta con Qwen local usando los fragmentos recuperados. Antes de mostrarse se comprueba que las citas existan y que las cifras aparezcan en el conjunto de evidencia citada; **esto no comprueba todavía que cada cifra corresponda al indicador, horizonte y fuente de la afirmación**. Una respuesta rechazada no se publica y muestra la evidencia revisada. Si la pregunta está fuera del alcance o la evidencia no basta, el sistema puede abstenerse; ese comportamiento aún requiere una evaluación independiente más amplia. Un informe nombrado en la pregunta («informe de julio de 2025») restringe la búsqueda a ese informe. Límites y mediciones en la [ADR 0009](docs/decisiones/0009-respuestas-fundamentadas.md). Las respuestas no son asesoría financiera ni comunicaciones del Banco.
 
 ## Comparaciones y resúmenes
 
@@ -91,7 +91,7 @@ uv run --frozen banrep-rag resumir 2025-10
 uv run --frozen banrep-rag resumir 2026-01 --tema "mercado laboral"
 ```
 
-`comparar` no usa el modelo de lenguaje: toma solo celdas atribuidas de los cuadros, compara únicamente el mismo cuadro, fila, horizonte y unidad, calcula las diferencias en Python (en puntos porcentuales cuando la unidad es porcentual), distingue revisiones de proyección y datos observados, advierte diferencias de redondeo y cita cada valor con su página. `resumir` redacta con Qwen y verifica las cifras contra la evidencia del informe. Detalles en la [ADR 0010](docs/decisiones/0010-comparaciones-y-resumenes.md).
+`comparar` no usa el modelo de lenguaje: toma celdas atribuidas, agrupa por título normalizado, fila, horizonte textual y unidad, calcula diferencias con `Decimal` en Python y cita cada valor con su página. **Limitación conocida:** la marca actual «proyección o supuesto» no distingue ambos tipos, la ausencia de marca no demuestra observación y dos unidades desconocidas pueden compararse por error. No uses estas etiquetas como clasificación económica definitiva hasta completar la corrección. `resumir` redacta con Qwen; la presencia de cifras en la evidencia no garantiza su atribución. Detalles en la [ADR 0010](docs/decisiones/0010-comparaciones-y-resumenes.md).
 
 ## Detección de publicaciones y actualización local
 

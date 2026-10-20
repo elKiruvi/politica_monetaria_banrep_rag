@@ -36,3 +36,7 @@ Reutilizan el flujo verificado de `consultar` (ADR 0009), restringido a un infor
 - La marca de proyección proviene de la negrilla según la nota del cuadro (F4). Un cuadro que no marca proyecciones aparece como «sin marca», no como observado.
 - La redacción narrativa de una comparación con Qwen no se implementa: la tabla calculada ya es la respuesta. Se podrá añadir con la misma verificación de cifras.
 - En los resúmenes, la verificación de presencia de cifras no garantiza su interpretación. Por ejemplo, la mediana esperada por los analistas puede presentarse como dato.
+
+## Nota de auditoría posterior (20-10-2026)
+
+Esta ADR registra la decisión de F6B, **no** una garantía de exactitud económica vigente. La revisión adversarial del issue #47 confirmó que la marca `projection_or_assumption` no distingue una proyección de un supuesto; la falta de marca tampoco demuestra un dato observado. Dos unidades `null` coinciden y pueden producir una diferencia sin unidad demostrada. Los títulos homónimos y la presencia de cifras en bloques citados no bastan para atribuir fuente, indicador u horizonte. Los casos reproducibles se fijaron como XFAIL estrictos en `tests/test_economic_adversarial.py`; las correcciones y su contrato de migración quedan para PR posteriores. Los ejemplos de IPC del apartado «Resultados reales» fueron contrastados con los PDF originales, pero eso no valida las demás etiquetas o comparaciones de forma general.
