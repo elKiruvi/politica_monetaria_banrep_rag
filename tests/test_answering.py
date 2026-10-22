@@ -437,6 +437,40 @@ def test_audit_other_named_indicator_cannot_borrow_a_known_indicator(claim, sour
     )
 
 
+def test_audit_source_with_e_conjunction_cannot_swap_inflation_categories():
+    result = {
+        "answer": "Según el informe de julio de 2025, pág. 49, IPC total 3,5 % [E1]",
+        "citations": ["E1"],
+        "insufficient_evidence": False,
+    }
+    source = "IPC total 4,7 % e inflación básica 3,5 %."
+    item = chunk("source-e-conjunction", "2025-07", source, page=49)
+    for scope in ("cited", "all"):
+        assert (
+            verify(
+                result,
+                {"E1": source},
+                "IPC total",
+                {"E1": {49}},
+                scope=scope,
+                metadata_years={"E1": {"2025"}},
+                metadata_periods={"E1": "2025-07"},
+            )[0]
+            == "rejected"
+        )
+        assert (
+            answer_question(
+                "IPC total", [hit(item)], lambda c: [], FakeGenerator(result), scope=scope
+            ).status
+            == "rejected"
+        )
+    result["answer"] = result["answer"].replace("3,5 %", "4,7 %")
+    assert (
+        answer_question("IPC total", [hit(item)], lambda c: [], FakeGenerator(result)).status
+        == "answered"
+    )
+
+
 def test_audit_repeated_value_still_needs_both_indicators():
     answer = {
         "answer": "IPC total 4,7 % y tasa de política 4,7 % [E1]",
@@ -866,6 +900,40 @@ def test_audit_hyphenated_annex_is_not_the_parent_annex():
             == "rejected"
         )
     result["answer"] = result["answer"].replace("Anexo 2 (", "Anexo 2-1 (")
+    assert (
+        answer_question("IPC total", [hit(item)], lambda c: [], FakeGenerator(result)).status
+        == "answered"
+    )
+
+
+def test_audit_annex_reference_binds_figure_to_its_own_section():
+    result = {
+        "answer": "Según el informe de julio de 2025, Anexo 2 (pág. 49), IPC total 3,2 % [E1]",
+        "citations": ["E1"],
+        "insufficient_evidence": False,
+    }
+    source = "Anexo 2: IPC total 4,7 %. Anexo 3: IPC total 3,2 %."
+    item = chunk("two-annex-sections", "2025-07", source, page=49)
+    for scope in ("cited", "all"):
+        assert (
+            verify(
+                result,
+                {"E1": source},
+                "IPC total",
+                {"E1": {49}},
+                scope=scope,
+                metadata_years={"E1": {"2025"}},
+                metadata_periods={"E1": "2025-07"},
+            )[0]
+            == "rejected"
+        )
+        assert (
+            answer_question(
+                "IPC total", [hit(item)], lambda c: [], FakeGenerator(result), scope=scope
+            ).status
+            == "rejected"
+        )
+    result["answer"] = result["answer"].replace("3,2 %", "4,7 %")
     assert (
         answer_question("IPC total", [hit(item)], lambda c: [], FakeGenerator(result)).status
         == "answered"

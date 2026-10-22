@@ -168,7 +168,7 @@ _INJECTED_COMMAND = re.compile(
     re.I,
 )
 _INDICATOR_BREAK = re.compile(
-    r"(?:\s+y\s+|\s+/\s+|,\s*(?:mientras\s+)?|\s+(?:mientras|frente\s+a|pero)\s+)"
+    r"(?:\s+(?:y|e)\s+|\s+/\s+|,\s*(?:mientras\s+)?|\s+(?:mientras|frente\s+a|pero)\s+)"
     r"(?=(?:la\s+|el\s+)?(?:inflaci[oó]n|ipc|tasa)\b)",
     re.I,
 )
@@ -310,9 +310,9 @@ def _claim_kinds(text: str) -> set[str]:
     kinds = set()
     if "ipc total" in name or "inflacion total" in name:
         kinds.add("headline")
-    elif "inflacion basica" in name or "ipc sin alimentos ni regulados" in name:
+    if "inflacion basica" in name or "ipc sin alimentos ni regulados" in name:
         kinds.add("core")
-    elif "inflacion" in name or "ipc" in name:
+    if not kinds and ("inflacion" in name or "ipc" in name):
         kinds.add("inflation")
     if "tasa de politica" in name or "tasa de interes de politica" in name:
         kinds.add("policy")
@@ -492,11 +492,26 @@ def _source_supports_claim(
     )
     if report_periods - periods:
         return False
-    if any(
-        not re.search(rf"\b{re.escape(fold(annex))}(?![\w.-])", fold(text)) for annex in annexes
-    ):
+    if _INJECTED_COMMAND.search(text) or len(annexes) > 1:
         return False
-    if values and not all(_supports(text, fact, n, (attributed or {}).get(label)) for n in values):
+    sections = [text]
+    if annexes:
+        matches = list(_ANNEX_REF.finditer(text))
+        sections = [
+            text[
+                match.start() : matches[index + 1].start()
+                if index + 1 < len(matches)
+                else len(text)
+            ]
+            for index, match in enumerate(matches)
+            if fold(match.group()) in {fold(annex) for annex in annexes}
+        ]
+        if not sections or (len(matches) > 1 and (attributed or {}).get(label) is not None):
+            return False  # las celdas no llevan el identificador individual del anexo
+    if values and not any(
+        all(_supports(section, fact, n, (attributed or {}).get(label)) for n in values)
+        for section in sections
+    ):
         return False
     # Los años de horizonte se cotejan con las celdas o con el texto del bloque, nunca con
     # los metadatos del informe. Solo los años ya presentes en la pregunta pueden omitirse.
