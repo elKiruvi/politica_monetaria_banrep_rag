@@ -13,7 +13,8 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from politica_monetaria_banrep_rag.generation import GenerationProvider
-from politica_monetaria_banrep_rag.retrieval import IndexedChunk, RetrievalHit
+from politica_monetaria_banrep_rag.retrieval import IndexedChunk, RetrievalHit, fold
+from politica_monetaria_banrep_rag.tables import AttributedCell
 
 # Similitud coseno mínima del mejor fragmento para consultar al modelo, calibrada por modelo de
 # embeddings con preguntas dentro y fuera del corpus (ADR 0009). Sin calibración no hay umbral.
@@ -67,6 +68,7 @@ _MONTHS = {"enero": "01", "abril": "04", "julio": "07", "octubre": "10"}
 # ser meses de datos u horizontes y no se interpretan.
 _REPORT_MENTION = re.compile(
     r"\b(?:informe|ipm)\s+(?:de\s+(?:pol[ií]tica\s+monetaria\s+(?:de\s+)?)?)?"
+    r"(?:correspondiente\s+a\s+)?"
     r"(enero|abril|julio|octubre)\s+(?:de\s+|del\s+)?(\d{4})\b",
     re.IGNORECASE,
 )
@@ -109,6 +111,11 @@ _PAGE_REF = re.compile(
 _MONTH_YEAR = re.compile(
     r"\b(?:ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)[-\s.](\d{2})\b", re.I
 )
+_MONTH_VALUE = re.compile(
+    r"\b(ene|feb|mar|abr|may|jun|jul|ago|sep|oct|nov|dic)[-\s.]"
+    r"(\d{2})\s*:\s*([-−]?\d+(?:[.,]\d+)*)",
+    re.I,
+)
 _WORD_NUMBERS = {
     "cero": 0, "uno": 1, "una": 1, "dos": 2, "tres": 3, "cuatro": 4, "cinco": 5, "seis": 6,
     "siete": 7, "ocho": 8, "nueve": 9, "diez": 10, "once": 11, "doce": 12, "trece": 13,
@@ -121,6 +128,50 @@ _WORD_FIGURE = re.compile(
     r"\b(" + "|".join(_WORD_NUMBERS) + r")\s+(?:por\s+ciento|puntos?\b|pb\b|pp\b)", re.I
 )
 _YEAR = re.compile(r"^(?:19|20)\d{2}$")
+_CLAIM_BREAK = re.compile(
+    r";|\n+|[!?](?=\s|$)|(?<!p\.p)(?<!pág)(?<!págs)\.(?=\s|$)"
+    r"|(?<=\])(?:,\s*|\s+)(?=(?:(?:y|mientras)\s+)?"
+    r"(?:la\s+|el\s+)?(?:ipc|inflaci[oó]n|tasa)\b)",
+    re.I,
+)
+_HORIZON_VALUE = re.compile(r"\b((?:19|20)\d{2})\s*:\s*([-−]?\d+(?:[.,]\d+)*)")
+_TARGET_HORIZON = re.compile(
+    r"\b(?:para|a fin de|al cierre de|a finales de|horizonte)\s+"
+    r"(?:(?:el\s+)?año\s+)?(?:diciembre de\s+)?((?:19|20)\d{2})\b"
+    r"|\b(?:ipc total|inflaci[oó]n(?: total| b[áa]sica)?|tasa de pol[ií]tica)\s+"
+    r"(?:de\s+)?((?:19|20)\d{2})\b(?=\s*(?::|ser[áa]\b))",
+    re.I,
+)
+_INDICATOR_YEAR = re.compile(
+    r"\b(?:ipc total|inflaci[oó]n(?: total| b[áa]sica)?|tasa de pol[ií]tica)\s+"
+    r"de\s+((?:19|20)\d{2})\b",
+    re.I,
+)
+_YEAR_CONTEXT = re.compile(r"\ben\s+(?:(?:el\s+)?año\s+)?((?:19|20)\d{2})\b", re.I)
+_MONTH_HORIZON = re.compile(r"\b(diciembre|dic)\s+(?:de\s+)?((?:19|20)\d{2})\b", re.I)
+_SHORT_MONTH = re.compile(r"\bdic[-\s](\d{2})\b", re.I)
+_ANNEX_REF = re.compile(r"\bAnexo\s+\d+(?:[.-]\d+)*\b", re.I)
+_REPORT_YEAR = re.compile(
+    r"\b(?:informe|ipm)(?:\s+de\s+pol[ií]tica\s+monetaria)?\s+"
+    r"(?:(?:de|del|en|correspondiente\s+a)\s+)?"
+    r"(?:(?:enero|abril|julio|octubre)\s+(?:de\s+)?)?"
+    r"((?:19|20)\d{2})\b",
+    re.I,
+)
+_POSSIBLE_REPORT = re.compile(r"\b(?:informe|ipm)\b[^.!?;\n]{0,80}\b(?:19|20)\d{2}\b", re.I)
+_INJECTED_COMMAND = re.compile(
+    r"\b(?:SISTEMA\s*:|(?:para\s+(?:el|la)\s+|atenci[oó]n\s+al\s+)?asistente\s*[:,]|"
+    r"para\s+el\s+modelo\s*:|"
+    r"ignora\s+(?:tus|las?)\s+reglas\b|no\s+cites\b|"
+    r"(?:di|responde|escribe)\s+(?:que|con)\b|"
+    r"omite\s+el\s+valor\b|sustituye\s+la\s+cifra\b)",
+    re.I,
+)
+_INDICATOR_BREAK = re.compile(
+    r"(?:\s+(?:y|e)\s+|\s+/\s+|,\s*(?:mientras\s+)?|\s+(?:mientras|frente\s+a|pero)\s+)"
+    r"(?=(?:la\s+|el\s+)?(?:inflaci[oó]n|ipc|tasa)\b)",
+    re.I,
+)
 
 
 @dataclass(frozen=True)
@@ -253,6 +304,223 @@ def model_citations(result: dict[str, object]) -> list[str]:
     return list(dict.fromkeys([*in_text, *(str(c).strip("[] ") for c in items)]))
 
 
+def _claim_kinds(text: str) -> set[str]:
+    """Detecta indicadores expresos, incluso cuando una cláusula menciona varios."""
+    name = fold(text)
+    kinds = set()
+    if "ipc total" in name or "inflacion total" in name:
+        kinds.add("headline")
+    if "inflacion basica" in name or "ipc sin alimentos ni regulados" in name:
+        kinds.add("core")
+    if not kinds and ("inflacion" in name or "ipc" in name):
+        kinds.add("inflation")
+    if "tasa de politica" in name or "tasa de interes de politica" in name:
+        kinds.add("policy")
+    if re.search(r"\bpib\b|producto interno bruto", name):
+        kinds.add("gdp")
+    if "desempleo" in name:
+        kinds.add("unemployment")
+    for match in re.finditer(r"\btasa de ([a-z]+)\b", name):
+        if match.group(1) not in {"politica", "interes", "desempleo"}:
+            kinds.add(f"rate:{match.group(1)}")
+    for match in re.finditer(r"\bindice de precios (?:al|del|de la) ([a-z]+)\b", name):
+        kinds.add(f"price-index:{match.group(1)}")
+    return kinds
+
+
+def _claim_kind(text: str) -> str | None:
+    """Solo nombres inequívocos; «inflación» no significa por sí sola IPC total."""
+    kinds = _claim_kinds(text)
+    return next(iter(kinds)) if len(kinds) == 1 else None
+
+
+def _same_kind(claim: str | None, source: str | None) -> bool:
+    if claim is None:
+        return True  # un dato sin indicador expreso no permite inferir un indicador concreto
+    if source is None:
+        return False  # una cifra genérica no acredita el indicador nombrado en la respuesta
+    return claim == source or (claim == "inflation" and source in {"headline", "core"})
+
+
+def _horizon(claim: str) -> tuple[str | None, str | None]:
+    target = _TARGET_HORIZON.search(claim)
+    month = _MONTH_HORIZON.search(claim)
+    short = _SHORT_MONTH.search(claim)
+    if target:
+        return target.group(1) or target.group(2), "dic" if month else None
+    if month:
+        return month.group(2), "dic"
+    if short:
+        return f"20{short.group(1)}", "dic"
+    indicator_year = _INDICATOR_YEAR.search(claim)
+    if indicator_year:
+        return indicator_year.group(1), None
+    year = _YEAR_CONTEXT.search(claim)
+    return (year.group(1) if year else None), None
+
+
+def _cell_horizon_matches(cell: AttributedCell, year: str | None, month: str | None) -> bool:
+    if year is None:
+        return True
+    text = fold(cell.horizon or cell.column)
+    short = _MONTH_YEAR.search(text)
+    if month:
+        return (short is not None and short.group(1) == year[-2:] and month == "dic") or (
+            _MONTH_HORIZON.search(text) is not None and year in text and month == "dic"
+        )
+    return bool(re.search(rf"\b{year}\b", text))
+
+
+def _supports(text: str, claim: str, number: str, cells: tuple[AttributedCell, ...] | None) -> bool:
+    """Una cifra necesita su propio bloque; las celdas estructuradas mandan sobre las notas."""
+    if _INJECTED_COMMAND.search(text):
+        return False
+    horizon, month = _horizon(claim)
+    kind = _claim_kind(claim)
+    if cells is not None:
+        for cell in cells:
+            if number not in _evidence_numbers(cell.value):
+                continue
+            if not _cell_horizon_matches(cell, horizon, month):
+                continue
+            cell_kind = _claim_kind(" > ".join(cell.row))
+            if kind in {"headline", "core", "policy"} and cell_kind != kind:
+                continue
+            if not _same_kind(kind, cell_kind):
+                continue
+            return True
+        return False
+    # En prosa, la cifra y el indicador han de aparecer en la misma oración o cláusula.
+    fragments = [
+        _REPORT_YEAR.sub(" ", fact)
+        for sentence in _CLAIM_BREAK.split(text)
+        for fact in _INDICATOR_BREAK.split(sentence)
+    ]
+    for fact in fragments:
+        if len(_claim_kinds(fact)) > 1:
+            continue
+        if number not in _block_numbers(fact) or not _same_kind(kind, _claim_kind(fact)):
+            continue
+        pairs = [(year, _canonical(value)) for year, value in _HORIZON_VALUE.findall(fact)]
+        month_pairs = [
+            (f"20{year}", name.lower(), _canonical(value))
+            for name, year, value in _MONTH_VALUE.findall(fact)
+        ]
+        if horizon and month_pairs and not pairs:
+            if not any(
+                year == horizon and value == number and (not month or name == month)
+                for year, name, value in month_pairs
+            ):
+                continue
+            return True
+        years = {n for n in _block_numbers(fact) if _YEAR.match(n)}
+        values = {n for n in _numbers(fact) if not _YEAR.match(n)}
+        if horizon and not pairs and len(years) > 1 and len(values) > 1:
+            continue  # sin pares inequívocos, la cifra podría pertenecer a otro horizonte
+        if horizon and pairs and (horizon, number) not in pairs:
+            continue
+        if horizon and not pairs and any(_YEAR.match(n) for n in _block_numbers(fact)):
+            if horizon not in _block_numbers(fact):
+                continue
+        return True
+    return False
+
+
+def _claim_spans(answer: str) -> list[tuple[int, int]]:
+    """Conserva offsets de las frases para reescribir solo su propia cita."""
+    boundaries = [0, *(match.end() for match in _CLAIM_BREAK.finditer(answer)), len(answer)]
+    return [
+        (start, end)
+        for start, end in zip(boundaries, boundaries[1:], strict=False)
+        if answer[start:end].strip()
+    ]
+
+
+def _referenced_pages(segment: str) -> set[int] | None:
+    """Un rango afirma también todas sus páginas intermedias, no solo los extremos."""
+    pages: set[int] = set()
+    for match in _PAGE_REF.finditer(segment):
+        first, last = int(match.group(1)), int(match.group(2) or match.group(1))
+        if last < first or last - first > 50:
+            return None
+        pages.update(range(first, last + 1))
+    return pages
+
+
+def _numeric_facts(text: str, question_years: set[str]) -> list[tuple[str, set[str]]] | None:
+    """Una cláusula mixta solo es comprobable si cada indicador delimita sus cifras."""
+    facts: list[tuple[str, set[str]]] = []
+    for fact in _INDICATOR_BREAK.split(text):
+        values = {n for n in _numbers(fact) if not _YEAR.match(n)}
+        if len(_claim_kinds(fact)) > 1 and values:
+            return None
+        if values:
+            facts.append((fact, values))
+        elif any(_YEAR.match(n) and n not in question_years for n in _numbers(fact)):
+            facts.append((fact, set()))
+    return facts
+
+
+def _source_supports_claim(
+    label: str,
+    fact: str,
+    values: set[str],
+    *,
+    labels: dict[str, str],
+    pages: dict[str, set[int]] | None,
+    attributed: dict[str, tuple[AttributedCell, ...]] | None,
+    metadata_years: dict[str, set[str]] | None,
+    metadata_periods: dict[str, str] | None,
+    report_years: set[str],
+    report_periods: set[str],
+    page_refs: set[int],
+    annexes: set[str],
+    question_years: set[str],
+) -> bool:
+    text = labels[label]
+    years = (
+        (metadata_years or {}).get(label, set())
+        if metadata_years is not None
+        else set(_REPORT_YEAR.findall(text))
+    )
+    if report_years - years or page_refs - (pages or {}).get(label, set()):
+        return False
+    periods = (
+        {metadata_periods.get(label, "")}
+        if metadata_periods is not None
+        else {f"{year}-{_MONTHS[month.lower()]}" for month, year in _REPORT_MENTION.findall(text)}
+    )
+    if report_periods - periods:
+        return False
+    if _INJECTED_COMMAND.search(text) or len(annexes) > 1:
+        return False
+    sections = [text]
+    if annexes:
+        matches = list(_ANNEX_REF.finditer(text))
+        sections = [
+            text[
+                match.start() : matches[index + 1].start()
+                if index + 1 < len(matches)
+                else len(text)
+            ]
+            for index, match in enumerate(matches)
+            if fold(match.group()) in {fold(annex) for annex in annexes}
+        ]
+        if not sections or (len(matches) > 1 and (attributed or {}).get(label) is not None):
+            return False  # las celdas no llevan el identificador individual del anexo
+    if values and not any(
+        all(_supports(section, fact, n, (attributed or {}).get(label)) for n in values)
+        for section in sections
+    ):
+        return False
+    # Los años de horizonte se cotejan con las celdas o con el texto del bloque, nunca con
+    # los metadatos del informe. Solo los años ya presentes en la pregunta pueden omitirse.
+    horizon_years = {n for n in _numbers(fact) if _YEAR.match(n)} - question_years
+    if horizon_years and not values and horizon_years - _block_numbers(text):
+        return False
+    return True
+
+
 def verify(
     result: dict[str, object],
     labels: dict[str, str],
@@ -260,12 +528,15 @@ def verify(
     pages: dict[str, set[int]] | None = None,
     *,
     scope: str = "cited",
+    attributed: dict[str, tuple[AttributedCell, ...]] | None = None,
+    metadata_years: dict[str, set[str]] | None = None,
+    metadata_periods: dict[str, str] | None = None,
 ) -> tuple[str, str, list[str], str | None]:
     """Comprueba la salida del modelo; devuelve (estado, texto, citas, motivo).
 
-    ``pages`` son las páginas (físicas e impresas) de cada bloque: un número precedido de «pág.»
-    se acepta solo si es una página de la evidencia citada. Con ``scope="all"`` (resúmenes) una
-    cifra de un bloque revisado y no citado se acepta agregando ese bloque a las citas."""
+    ``pages`` son las páginas (físicas e impresas) de cada bloque. Cada hecho de un segmento
+    citado debe tener una fuente que respalde conjuntamente su cifra y referencias. Con
+    ``scope="all"`` (resúmenes) solo se reemplaza la cita del segmento comprobado."""
     answer = result.get("answer")
     citations = result.get("citations")
     insufficient = result.get("insufficient_evidence")
@@ -284,41 +555,98 @@ def verify(
         return "rejected", "", [], f"El modelo citó evidencia inexistente: {', '.join(unknown)}."
     if not cited:
         return "rejected", "", [], "El modelo respondió sin citar la evidencia."
-    body = _LABEL.sub(" ", _CITATION.sub(" ", answer))
-    cited_pages = {page for label in cited for page in (pages or {}).get(label, set())}
-    for match in _PAGE_REF.finditer(body):
-        referenced = {int(group) for group in match.groups() if group}
-        if not referenced <= cited_pages:
-            return (
-                "rejected",
-                "",
-                [],
-                "La respuesta mencionaba páginas que no corresponden a la evidencia citada.",
+    question_years = {n for n in _numbers(question) if _YEAR.match(n)}
+    replacements: list[tuple[int, int, str]] = []
+    spans = _claim_spans(answer)
+    for index, (start, end) in enumerate(spans):
+        if index:
+            previous_start, _ = spans[index - 1]
+            preceding = answer[previous_start:start]
+            previous_citation = _CITATION.search(preceding)
+            if (
+                previous_citation
+                and not any(char in preceding[previous_citation.end() :] for char in ".!?;")
+                and any(ref.search(preceding) for ref in (_REPORT_YEAR, _PAGE_REF, _ANNEX_REF))
+                and _numbers(answer[start:end]) - question_years
+            ):
+                return "rejected", "", [], "La cita separa el dato del informe o página."
+        clause = answer[start:end]
+        if len(_CITATION.findall(clause)) > 1:
+            return "rejected", "", [], "Las citas de la frase no delimitan cada afirmación."
+        previous = 0
+        for match in _CITATION.finditer(clause):
+            segment = clause[previous : match.start()]
+            inline = re.findall(r"E\d+", match.group(1))
+            previous = match.end()
+            report_years = set(_REPORT_YEAR.findall(segment))
+            if _POSSIBLE_REPORT.search(segment) and not report_years:
+                return "rejected", "", [], "No se pudo identificar el periodo del informe."
+            report_periods = {
+                f"{year}-{_MONTHS[month.lower()]}"
+                for month, year in _REPORT_MENTION.findall(segment)
+            }
+            page_refs = _referenced_pages(segment)
+            if page_refs is None:
+                return "rejected", "", [], "El rango de páginas no es verificable."
+            annexes = set(_ANNEX_REF.findall(segment))
+            body = _LABEL.sub(
+                " ", _ANNEX_REF.sub(" ", _PAGE_REF.sub(" ", _REPORT_YEAR.sub(" ", segment)))
             )
-    body = _PAGE_REF.sub(" ", body)
-    # De la pregunta solo se admiten años: una cifra de la premisa no se confirma sin evidencia.
-    allowed = {n for n in _numbers(question) if _YEAR.match(n)}
-    for label in cited:
-        allowed |= _block_numbers(labels[label])
-    unverified = sorted(_numbers(body) - allowed)
-    if unverified and scope == "all":
-        # Resúmenes: una cifra de un bloque revisado pero no citado se acepta solo si ese bloque
-        # se agrega a las citas, de modo que toda cifra tenga su fuente visible.
-        for number in list(unverified):
-            source = next((lab for lab in labels if number in _block_numbers(labels[lab])), None)
-            if source is not None:
-                cited.append(source)
-                unverified.remove(number)
-        cited = list(dict.fromkeys(cited))
-    if unverified:
-        return (
-            "rejected",
-            "",
-            [],
-            "La respuesta incluía cifras que no aparecen en la evidencia citada: "
-            + ", ".join(unverified)
-            + ".",
-        )
+            facts = _numeric_facts(body, question_years)
+            if facts is None:
+                return "rejected", "", [], "No se puede atribuir cada indicador de la frase."
+            if not facts:
+                facts = [(body, set())]
+            candidates = inline if scope != "all" else list(dict.fromkeys([*inline, *labels]))
+            supported: list[str] = []
+            for fact, values in facts:
+                source = next(
+                    (
+                        lab
+                        for lab in candidates
+                        if _source_supports_claim(
+                            lab,
+                            fact,
+                            values,
+                            labels=labels,
+                            pages=pages,
+                            attributed=attributed,
+                            metadata_years=metadata_years,
+                            metadata_periods=metadata_periods,
+                            report_years=report_years,
+                            report_periods=report_periods,
+                            page_refs=page_refs,
+                            annexes=annexes,
+                            question_years=question_years,
+                        )
+                    ),
+                    None,
+                )
+                if source is None:
+                    detail = next(iter(sorted(values)), "referencias")
+                    return (
+                        "rejected",
+                        "",
+                        [],
+                        f"La cifra o {detail} no respalda la afirmación con su cita o páginas.",
+                    )
+                supported.append(source)
+            supported = list(dict.fromkeys(supported))
+            if scope != "all" and set(inline) != set(supported):
+                return "rejected", "", [], "Una cita no respalda la afirmación con cifras."
+            if scope == "all" and inline != supported:
+                replacements.append(
+                    (start + match.start(), start + match.end(), f"[{', '.join(supported)}]")
+                )
+        trailing = clause[previous:]
+        if _numbers(_PAGE_REF.sub(" ", _ANNEX_REF.sub(" ", trailing))) - question_years or (
+            _PAGE_REF.search(trailing) or _ANNEX_REF.search(trailing)
+        ):
+            return "rejected", "", [], "Falta una cita junto a una afirmación con cifras."
+    for begin, finish, replacement in reversed(replacements):
+        answer = answer[:begin] + replacement + answer[finish:]
+    in_text = [lab for group in _CITATION.findall(answer) for lab in re.findall(r"E\d+", group)]
+    cited = list(dict.fromkeys(in_text or cited))
     return "answered", answer.strip(), cited, None
 
 
@@ -363,18 +691,15 @@ def answer_question(
         notes[label], used = block_notes, used + len(block)
         blocks.append(block)
     evidence = tuple(citation for citation in evidence if citation.label in labels)
-    # Cifras admisibles: solo el contenido citable (texto, notas, título y periodo); nunca las
-    # páginas ni otros metadatos del bloque, que el modelo no debe presentar como datos.
+    # Los años del informe respaldan referencias al informe, no valores de la evidencia.
     # Las cifras de un cuadro sin estructura (o de ejes) no están atribuidas: no habilitan datos.
+    # Las notas se muestran al generador, pero no heredan la página ni las celdas del bloque.
     texts = {
-        label: " ".join(
-            [hit.chunk.text if hit.chunk.evidence_quality != "unattributed_values" else "",
-             *(n.text for n in notes[label]),
-             # Del título y el periodo solo los años: «2025-10» no habilita la cifra «10».
-             *re.findall(r"(?:19|20)\d{2}", f"{hit.report.title} {hit.report.reference_period}")]
-        )
+        label: hit.chunk.text if hit.chunk.evidence_quality != "unattributed_values" else ""
         for label, hit in labels.items()
-    }  # fmt: skip
+    }
+    metadata_years = {label: {hit.report.reference_period[:4]} for label, hit in labels.items()}
+    metadata_periods = {label: hit.report.reference_period for label, hit in labels.items()}
     system, user = build_messages(question, blocks)
     result = generator.generate_json(system, user, ANSWER_SCHEMA)
     pages = {
@@ -384,7 +709,21 @@ def answer_question(
         }
         for label, hit in labels.items()
     }
-    status, text, cited, reason = verify(result, texts, question, pages, scope=scope)
+    attributed = {
+        label: hit.chunk.attributed_cells
+        for label, hit in labels.items()
+        if hit.chunk.kind == "table"
+    }
+    status, text, cited, reason = verify(
+        result,
+        texts,
+        question,
+        pages,
+        scope=scope,
+        attributed=attributed,
+        metadata_years=metadata_years,
+        metadata_periods=metadata_periods,
+    )
     by_label = {citation.label: citation for citation in evidence}
     if status == "insufficient_evidence":
         text = "La evidencia recuperada no permite responder la pregunta con seguridad."
