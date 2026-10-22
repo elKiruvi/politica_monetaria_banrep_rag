@@ -275,7 +275,6 @@ def test_b15_three_reports_keep_missing_slot_in_chronological_order():
     assert any("Falta el valor" in note for note in row.notes)
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="A: cifra ajena al horizonte")
 def test_cited_figure_must_support_its_claim_not_just_occur_in_block():
     result = {
         "answer": "El IPC total para 2025 será 3,2 % [E1].",
@@ -286,7 +285,6 @@ def test_cited_figure_must_support_its_claim_not_just_occur_in_block():
     assert verify(result, labels, "¿IPC total para 2025?")[0] == "rejected"
 
 
-@pytest.mark.xfail(strict=True, raises=AssertionError, reason="A: cifras entre bloques")
 def test_swapped_evidence_citations_are_not_valid_claims():
     result = {
         "answer": "IPC total 9,25 % [E1]; tasa de política 4,7 % [E2].",
